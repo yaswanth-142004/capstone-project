@@ -1,0 +1,186 @@
+"""
+Tinglish (ISO-transliterated Telugu) → English loanword mapping.
+This dictionary maps common transliterated English loanwords back to their
+standard English spellings for explicit code-switch tagging.
+
+Add more entries as you process more data — this is designed to grow.
+"""
+
+# Format: "transliterated_form": "english_word"
+# Multiple transliterated variants can map to the same English word.
+
+LOANWORD_DICT = {
+    # ── Tech / Device terms ──────────────────────────────────────────────
+    "prāsesar": "processor",
+    "prāsesar": "processor",
+    "ḍisplē": "display",
+    "ḍisple": "display",
+    "byāṭarī": "battery",
+    "byāṭṭarī": "battery",
+    "baṭṭarī": "battery",
+    "cārjiṁg": "charging",
+    "cārjing": "charging",
+    "kemerā": "camera",
+    "kemerās": "cameras",
+    "phōn": "phone",
+    "phōns": "phones",
+    "lāpṭāp": "laptop",
+    "skrīn": "screen",
+    "ṭac": "touch",
+    "grāphik": "graphic",
+    "grāphiks": "graphics",
+    "gēmiṁg": "gaming",
+    "gēming": "gaming",
+    "māgneṭik": "magnetic",
+    "sapōrṭ": "support",
+    "rēṭiṁg": "rating",
+    "rēṭing": "rating",
+    "inbilṭ": "inbuilt",
+    "memorī": "memory",
+    "glās": "glass",
+    "lēyar": "layer",
+    "phōlḍ": "fold",
+    "phōlḍabul": "foldable",
+    "anphōlḍ": "unfold",
+    "phlāṭ": "flat",
+    "ṭeliphōṭō": "telephoto",
+    "ṭeliphōṭōjens": "telephoto-lens",
+    "phraṁṭ": "front",
+    "byāk": "back",
+    "meyin": "main",
+    "saiḍ": "side",
+    "sūpar": "super",
+    "alṭrā": "ultra",
+    "ṭaiṭāniyaṁ": "titanium",
+    "speṣal": "special",
+    "kāmpākṭ": "compact",
+    "ōelī": "OLED",
+    "hijl": "hinge",
+    "hiṁj": "hinge",
+    "gyāp": "gap",
+    "krīs": "crease",
+    "krīsles": "creaseless",
+    "priṁṭiṁg": "printing",
+    "priṁṭing": "printing",
+    "insṭāl": "install",
+    "rizalyūṣan": "resolution",
+    "rijayūṣan": "resolution",
+    "riphrijirēṭar": "refrigerator",
+
+    # ── General English loanwords ────────────────────────────────────────
+    "nyūs": "news",
+    "neksṭ": "next",
+    "phasṭ": "first",
+    "sēm": "same",
+    "ḍīl": "deal",
+    "līks": "leaks",
+    "līk": "leak",
+    "sirīs": "series",
+    "ripōrṭ": "report",
+    "rikārḍ": "record",
+    "rikārḍs": "records",
+    "brēk": "break",
+    "rilīj": "release",
+    "ḍiskauṁṭ": "discount",
+    "selliṁg": "selling",
+    "selling": "selling",
+    "prais": "price",
+    "liṁk": "link",
+    "ḍiskripṣan": "description",
+    "kānsepṭ": "concept",
+    "prājekṭ": "project",
+    "inpharmēṣan": "information",
+    "provaiḍ": "provide",
+    "ṭvīṭ": "tweet",
+    "klāriṭī": "clarity",
+    "mōḍal": "model",
+    "baḍjeṭ": "budget",
+    "ārḍar": "order",
+    "ālphābeṭikal": "alphabetical",
+    "ōvarṭēk": "overtake",
+    "kaṁplīṭ": "complete",
+    "ḍiskaṁṭinyū": "discontinue",
+    "ṭīc": "tease",
+    "ṭeknōs": "tech-news",
+    "kārḍ": "card",
+    "kārḍs": "cards",
+    "ḍabul": "double",
+    "ḍōr": "door",
+    "trī": "three",
+    "sṭār": "star",
+    "nārmal": "normal",
+    "ḍē": "day",
+    "ṭāp": "top",
+    "aṁḍ": "and",
+    "sō": "so",
+    "hāph": "half",
+    "vark": "work",
+    "āph": "of",
+    "rīl": "reel",
+    "ṣārṭ": "short",
+    "ṭaiṁ": "time",
+    "ḍēṭ": "date",
+    "laiph": "life",
+    "cek": "check",
+    "ran": "run",
+    "yāḍ": "add",
+    "pīsi": "PC",
+    "gēms": "games",
+    "gēm": "game",
+    "tharḍ": "third",
+    "pārṭ": "party",
+    "phil": "fill",
+    "saksesar": "successor",
+    "sēphainal": "semifinal",
+    "semīphainal": "semifinal",
+    "phainal": "final",
+    "phainals": "finals",
+    "ḍāmineṭ": "dominate",
+    "ḍāminēṭ": "dominate",
+    "varalḍ": "world",
+    "kap": "cup",
+    "mōsṭlī": "mostly",
+    "ālreḍī": "already",
+    "van": "one",
+    "egjākṭ": "exact",
+    "ṭōṭal": "total",
+    "vyūs": "views",
+    "ōveral": "overall",
+    "hāsṭār": "hotstar",
+    "vak": "VOOC",
+    "mediaṭak": "MediaTek",
+    "mīḍiyāṭek": "MediaTek",
+    "ḍaimaṁḍsiṭī": "Dimensity",
+
+    # ── Brand names (keep capitalized) ───────────────────────────────────
+    "appl": "Apple",
+    "aipha": "iPhone",
+    "xbaks": "Xbox",
+    "heliks": "Helix",
+    "vikṭas": "Victus",
+    "hecpa": "HP",
+    "hep": "HP",
+    "blūbar": "Bloomberg",
+    "jiyō": "Jio",
+    "vāṣ": "Wash",
+}
+
+def get_loanword_dict():
+    """Returns the loanword dictionary."""
+    return LOANWORD_DICT
+
+def lookup(word):
+    """
+    Look up a transliterated word in the dictionary.
+    Returns the English equivalent or None.
+    """
+    # Direct match (case-insensitive on the key)
+    lower = word.lower()
+    if lower in LOANWORD_DICT:
+        return LOANWORD_DICT[lower]
+    # Try stripping common Telugu suffixes that might be attached
+    # e.g. "prāsesartō" = "prāsesar" + "tō" (with)
+    for suffix in ["tō", "lō", "ki", "ni", "gā", "ka", "lo", "to"]:
+        if lower.endswith(suffix) and lower[:-len(suffix)] in LOANWORD_DICT:
+            return LOANWORD_DICT[lower[:-len(suffix)]]
+    return None
