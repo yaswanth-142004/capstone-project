@@ -134,3 +134,12 @@ Pipfile.lock
 *.tmp
 *.swp
 *.swo
+
+# Project data (downloaded audio, processed datasets)
+data/
+
+# Trained models
+models/
+
+# Context tracker
+.gemini/context/

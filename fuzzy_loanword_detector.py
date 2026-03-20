@@ -65,7 +65,7 @@ _STOP = {
     "pedataru","paddaru","pedallu",
 }
 
-print(f"[Detector] {len(_ENG)} English words loaded.")
+_ENG_COUNT = len(_ENG)  # Available for diagnostics if needed
 
 @lru_cache(maxsize=None)
 def detect_loanword(word: str) -> str | None:

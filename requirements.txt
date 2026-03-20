@@ -1,0 +1,7 @@
+yt-dlp
+webvtt-py
+pydub
+aksharamukha
+pyspellchecker
+unidecode
+static-ffmpeg
