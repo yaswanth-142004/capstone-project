@@ -1,145 +1,126 @@
-# Byte-compiled / optimized / DLL files
+# =========================
+# Python cache files
+# =========================
 __pycache__/
 *.py[cod]
-*$py.class
-
-# C extensions
+*.pyo
+*.pyd
 *.so
 
-# Distribution / packaging
-.Python
+# =========================
+# Virtual environments
+# =========================
+venv/
+env/
+ENV/
+.venv/
+venv*/
+.env/
+
+# =========================
+# Build / distribution
+# =========================
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
+pip-wheel-metadata/
 
+# =========================
 # PyInstaller
+# =========================
 *.manifest
 *.spec
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-# Flask stuff
-instance/
-.webassets-cache
-
-# Scrapy stuff
-.scrapy
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-.pybuilder/
-target/
-
+# =========================
 # Jupyter Notebook
-.ipynb_checkpoints
+# =========================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
 
-# IPython
-profile_default/
-ipython_config.py
-
-# Environments
-.env
-.env.*
-.venv
-venv/
-ENV/
-env/
-env.bak/
-venv.bak/
-
-# VS Code
-.vscode/
-
-# PyCharm / IntelliJ
-.idea/
-
-# Mac
-.DS_Store
-
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Ruff
-.ruff_cache/
-
-# Pyre
-.pyre/
-
-# pytype
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# Poetry
-poetry.lock
-
-# Pipenv
-Pipfile.lock
-
-# dotenv
-.envrc
-
+# =========================
 # Logs
+# =========================
 *.log
+logs/
+log/
 
-# Temporary files
-*.tmp
+# =========================
+# IDEs / Editors
+# =========================
+.vscode/
+.idea/
 *.swp
 *.swo
+*.sublime-project
+*.sublime-workspace
 
-# Project data (downloaded audio, processed datasets)
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Testing / coverage
+# =========================
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+
+# =========================
+# Mypy / type checking
+# =========================
+.mypy_cache/
+.dmypy.json
+
+# =========================
+# Ruff / lint caches
+# =========================
+.ruff_cache/
+
+# =========================
+# ML / ASR / Data (VERY useful for your project)
+# =========================
 data/
+datasets/
+*.wav
+*.mp3
+*.flac
+*.ogg
 
-# Trained models
+# model outputs
+checkpoints/
+outputs/
+runs/
 models/
 
-# Context tracker
-.gemini/context/
+# HuggingFace cache
+.cache/
+huggingface/
+transformers_cache/
+
+# =========================
+# PyTorch / ML artifacts
+# =========================
+*.pt
+*.pth
+*.bin
+
+# =========================
+# Misc
+# =========================
+*.tmp
+*.bak
