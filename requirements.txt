@@ -5,3 +5,13 @@ aksharamukha
 pyspellchecker
 unidecode
 static-ffmpeg
+datasets[audio]
+evaluate
+transformers
+peft
+accelerate
+torch
+torchaudio
+soundfile
+librosa
+tensorboard

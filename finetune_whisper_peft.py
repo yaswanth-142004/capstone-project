@@ -33,11 +33,19 @@ def get_peft_whisper_model(model_name, tokenizer_len):
 def finetune_whisper(dataset_dir, output_dir, model_name="openai/whisper-small"):
     print(f"Loading dataset from {dataset_dir}...")
     dataset = load_from_disk(dataset_dir)
-    
-    # Simple split
-    dataset = dataset.train_test_split(test_size=0.1)
-    train_ds = dataset["train"]
-    eval_ds = dataset["test"]
+
+    if hasattr(dataset, "keys") and "train" in dataset.keys():
+        train_ds = dataset["train"]
+        eval_ds = dataset.get("validation") or dataset.get("test")
+    else:
+        split = dataset.train_test_split(test_size=0.1, seed=42)
+        train_ds = split["train"]
+        eval_ds = split["test"]
+
+    transcript_column = "sentence" if "sentence" in train_ds.column_names else "text"
+    print(f"Using transcript column: {transcript_column}")
+    if eval_ds is None:
+        print("No validation split found; training will run without eval data.")
     
     print(f"Loading tokenizer and processor for {model_name}...")
     feature_extractor = WhisperFeatureExtractor.from_pretrained(model_name)

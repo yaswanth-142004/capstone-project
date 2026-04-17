@@ -242,7 +242,7 @@ def _save_hf_dataset(path, records):
     if not records:
         return
     try:
-        from datasets import Audio, Dataset
+        from datasets import Audio, Dataset, DatasetDict
     except ImportError:
         print("[Dataset] Hugging Face datasets is not installed; skipped hf_dataset export")
         return
@@ -250,6 +250,7 @@ def _save_hf_dataset(path, records):
     hf_records = [
         {
             "audio": record["audio_path"],
+            "sentence": record["text"],
             "text": record["text"],
             "duration_s": record["duration_s"],
             "video_id": record["video_id"],
@@ -260,8 +261,19 @@ def _save_hf_dataset(path, records):
     ]
     dataset = Dataset.from_list(hf_records)
     dataset = dataset.cast_column("audio", Audio(sampling_rate=16000))
-    dataset.save_to_disk(path)
-    print(f"[Dataset] Hugging Face dataset saved to {path}")
+
+    if len(dataset) >= 2:
+        test_size = max(1, round(len(dataset) * 0.1))
+        split = dataset.train_test_split(test_size=test_size, seed=42)
+        dataset_dict = DatasetDict({
+            "train": split["train"],
+            "validation": split["test"],
+        })
+    else:
+        dataset_dict = DatasetDict({"train": dataset})
+
+    dataset_dict.save_to_disk(path)
+    print(f"[Dataset] Hugging Face ASR DatasetDict saved to {path}")
 
 
 def chunk_and_export(
