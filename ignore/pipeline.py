@@ -123,7 +123,7 @@ def _tag_token(token):
 
     prefix, core, suffix = match.groups()
 
-    from fuzzy_loanword_detector import detect_loanword
+    from ignore.fuzzy_loanword_detector import detect_loanword
     from loanword_dict import lookup
 
     english = lookup(core) or detect_loanword(core)
