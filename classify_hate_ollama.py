@@ -366,8 +366,15 @@ def classify_batches(
             except Exception as exc:
                 last_error = exc
                 if attempt == 1:
+                    timeout_hint = ""
+                    if "Read timed out" in str(exc) or "timed out" in str(exc).lower():
+                        timeout_hint = (
+                            " Ollama is reachable, but the model did not respond before the timeout. "
+                            "Try a smaller model, increase --timeout, or reduce --max-batch-size "
+                            "and --batch-char-budget."
+                        )
                     raise RuntimeError(
-                        f"Batch {index}/{total_batches} failed after retry: {exc}"
+                        f"Batch {index}/{total_batches} failed after retry: {exc}.{timeout_hint}"
                     ) from exc
                 time.sleep(1.0)
 
