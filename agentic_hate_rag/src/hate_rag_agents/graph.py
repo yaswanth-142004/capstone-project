@@ -92,8 +92,8 @@ def build_graph(config: AppConfig):
             reasons.append("low confidence")
         if state.get("syntax_report", {}).get("suspicious_word_salad"):
             reasons.append("possible evasion or low-structure text")
-        if not state.get("retrieved_examples"):
-            reasons.append("no retrieved context")
+        # if not state.get("retrieved_examples"):
+        #     reasons.append("no retrieved context")
 
         needs_review = bool(reasons)
         updated = {

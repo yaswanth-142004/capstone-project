@@ -54,7 +54,7 @@ python -m pip install -e .
 Start Ollama separately and make sure your model is available:
 
 ```powershell
-ollama pull llama3.1:8b
+ollama pull gemma4:26b
 ollama serve
 ```
 
@@ -64,11 +64,22 @@ Copy `.env.example` to `.env` if you want to override defaults.
 
 Important defaults:
 
-- `OLLAMA_MODEL=llama3.1:8b`
+- `OLLAMA_MODEL=gemma4:26b`
 - `OLLAMA_BASE_URL=http://127.0.0.1:11434`
 - `MURIL_MODEL=google/muril-base-cased`
 - `CHROMA_DIR=./storage/chroma`
 - `CHROMA_COLLECTION=code_mixed_hate_memory`
+
+## Serve Ollama Through FastAPI
+
+This project includes a separate FastAPI service for exposing local Ollama models on another port, useful with ngrok:
+
+```powershell
+python ..\ollama_fastapi_service.py --host 0.0.0.0 --port 8088
+ngrok http 8088
+```
+
+The service always uses `gemma4:26b` and has no bearer-token auth. See `OLLAMA_FASTAPI_SERVICE.md` for endpoints and curl examples using `https://accent-copied-scrabble.ngrok-free.dev`.
 
 ## Ingest Examples Into RAG Memory
 
