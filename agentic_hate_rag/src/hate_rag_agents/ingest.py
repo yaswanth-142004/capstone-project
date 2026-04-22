@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chroma-dir", help="Override Chroma persistence directory.")
     parser.add_argument("--collection", help="Override Chroma collection name.")
     parser.add_argument("--embedding-model", help="Override MuRIL/HF embedding model.")
+    parser.add_argument("--reset-store", action="store_true", help="Delete the existing Chroma store before ingesting.")
+    parser.add_argument("--add-batch-size", type=int, default=5000, help="Maximum documents to add to Chroma per upsert.")
     return parser.parse_args()
 
 
@@ -32,6 +35,9 @@ def main() -> None:
     chroma_dir = resolve_path(args.chroma_dir) if args.chroma_dir else config.chroma_dir
     collection = args.collection or config.chroma_collection
     embedding_model = args.embedding_model or config.muril_model
+
+    if args.reset_store:
+        reset_store(chroma_dir)
 
     vector_store = make_vector_store(
         persist_directory=chroma_dir,
@@ -47,13 +53,43 @@ def main() -> None:
             print(f"Skipped {file_path}: no labelled rows.")
             continue
         documents, ids = documents_from_rows(rows)
-        vector_store.add_documents(documents, ids=ids)
+        add_documents_in_batches(vector_store, documents, ids, args.add_batch_size)
         total += len(documents)
         print(f"Ingested {len(documents)} rows from {file_path}")
 
     print(f"Finished. Total rows ingested: {total}")
     print(f"Chroma directory: {chroma_dir}")
     print(f"Collection: {collection}")
+
+
+def reset_store(chroma_dir: Path) -> None:
+    chroma_dir = chroma_dir.resolve()
+    if not chroma_dir.exists():
+        print(f"No existing Chroma store found at {chroma_dir}")
+        return
+    if not chroma_dir.is_dir():
+        raise ValueError(f"Refusing to reset non-directory Chroma path: {chroma_dir}")
+    if chroma_dir.anchor == str(chroma_dir):
+        raise ValueError(f"Refusing to reset filesystem root: {chroma_dir}")
+    shutil.rmtree(chroma_dir)
+    print(f"Deleted existing Chroma store: {chroma_dir}")
+
+
+def add_documents_in_batches(vector_store, documents: list, ids: list[str], batch_size: int) -> None:
+    if batch_size < 1:
+        raise ValueError("--add-batch-size must be at least 1.")
+
+    total = len(documents)
+    if total <= batch_size:
+        vector_store.add_documents(documents, ids=ids)
+        return
+
+    total_batches = (total + batch_size - 1) // batch_size
+    print(f"Adding {total} embedded documents to Chroma in {total_batches} batches...", flush=True)
+    for batch_number, start in enumerate(range(0, total, batch_size), start=1):
+        end = min(start + batch_size, total)
+        vector_store.add_documents(documents[start:end], ids=ids[start:end])
+        print(f"Chroma add progress: {end}/{total} documents ({batch_number}/{total_batches} batches)", flush=True)
 
 
 def rows_from_file(

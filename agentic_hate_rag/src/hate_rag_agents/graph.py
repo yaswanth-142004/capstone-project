@@ -26,6 +26,8 @@ class ClassificationState(TypedDict, total=False):
     label_name: str
     confidence: float
     languages: list[str]
+    primary_topic: str
+    topic_tags: list[str]
     explanation: str
     signals: list[str]
     needs_review: bool
@@ -82,6 +84,8 @@ def build_graph(config: AppConfig):
             "label_name": parsed.get("label_name") or ("Offensive" if label == 1 else "Non-Offensive"),
             "confidence": max(0.0, min(1.0, confidence)),
             "languages": parsed.get("languages", []),
+            "primary_topic": _clean_topic(parsed.get("primary_topic", "unclear")),
+            "topic_tags": _clean_topic_tags(parsed.get("topic_tags", [])),
             "explanation": parsed.get("rationale", ""),
             "signals": parsed.get("signals", []),
         }
@@ -110,6 +114,8 @@ def build_graph(config: AppConfig):
                     "label": state.get("label", ""),
                     "label_name": state.get("label_name", ""),
                     "confidence": state.get("confidence", ""),
+                    "primary_topic": state.get("primary_topic", ""),
+                    "topic_tags": state.get("topic_tags", []),
                     "review_reason": "; ".join(reasons),
                     "explanation": state.get("explanation", ""),
                     "retrieved_examples": state.get("retrieved_examples", []),
@@ -150,3 +156,37 @@ def _parse_llm_json(raw: str) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("LLM returned JSON, but it was not an object.")
     return parsed
+
+
+def _clean_topic(value: Any) -> str:
+    allowed = {
+        "politics",
+        "government",
+        "religion",
+        "sports",
+        "entertainment",
+        "caste_or_community",
+        "gender_or_sexuality",
+        "regional_or_nationality",
+        "personal_abuse",
+        "general",
+        "unclear",
+    }
+    topic = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return topic if topic in allowed else "unclear"
+
+
+def _clean_topic_tags(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_tags = [item.strip() for item in value.split(",")]
+    elif isinstance(value, list):
+        raw_tags = value
+    else:
+        raw_tags = []
+
+    tags: list[str] = []
+    for item in raw_tags:
+        tag = _clean_topic(item)
+        if tag and tag not in tags:
+            tags.append(tag)
+    return tags or ["unclear"]

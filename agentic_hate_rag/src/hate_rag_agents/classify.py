@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 import requests
@@ -29,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chroma-dir", help="Override Chroma persistence directory.")
     parser.add_argument("--collection", help="Override Chroma collection name.")
     parser.add_argument("--confidence-threshold", type=float, help="Override HITL threshold.")
+    parser.add_argument("--save-every", type=int, default=1, help="Write output progress after this many classified rows.")
     return parser.parse_args()
 
 
@@ -38,6 +40,7 @@ def main() -> None:
         raise SystemExit("Pass either --text or --input.")
 
     config = make_config(args)
+    print_classification_config(config, args)
     if not args.skip_ollama_check:
         health = check_ollama(config.ollama_base_url, config.ollama_model)
         if not health.reachable or not health.model_available:
@@ -59,30 +62,30 @@ def main() -> None:
         text_col = detect_column(df, args.text_column, DEFAULT_TEXT_COLUMNS, "text")
         label_col = detect_optional_column(df, args.label_column, DEFAULT_LABEL_COLUMNS, "label")
 
-        records = []
-        for idx, row in df.iterrows():
+        output_df = initialize_output_df(df, label_col)
+        total_rows = len(output_df)
+        save_every = max(1, args.save_every)
+
+        for completed, (idx, row) in enumerate(df.iterrows(), start=1):
             text = "" if pd.isna(row.get(text_col)) else str(row.get(text_col))
             result = graph.invoke({"text": text})
-            records.append(public_result(result))
-            print(f"Classified row {idx}: label={result.get('label')} confidence={result.get('confidence')}")
+            item = public_result(result)
+            write_result_to_row(output_df, idx, item)
+            if label_col:
+                gold_label = output_df.at[idx, "gold_hate_label"]
+                output_df.at[idx, "agent_label_matches_gold"] = (
+                    item["label"] == gold_label if gold_label is not None and not pd.isna(gold_label) else ""
+                )
+            print(
+                f"Classified {completed}/{total_rows} row {idx}: "
+                f"label={item['label']} confidence={item['confidence']} topic={item['primary_topic']}",
+                flush=True,
+            )
 
-        output_df = df.copy()
-        output_df["agent_normalized_text"] = [item["normalized_text"] for item in records]
-        output_df["agent_hate_label"] = [item["label"] for item in records]
-        output_df["agent_label_name"] = [item["label_name"] for item in records]
-        output_df["agent_confidence"] = [item["confidence"] for item in records]
-        output_df["agent_needs_review"] = [item["needs_review"] for item in records]
-        output_df["agent_explanation"] = [item["explanation"] for item in records]
-        output_df["agent_retrieved_examples"] = [
-            json.dumps(item["retrieved_examples"], ensure_ascii=False) for item in records
-        ]
-        output_df["agent_raw_response"] = [item["raw_response"] for item in records]
-        if label_col:
-            output_df["gold_hate_label"] = [normalize_label(value) for value in df[label_col]]
-            output_df["agent_label_matches_gold"] = [
-                agent_label == gold_label if gold_label is not None else ""
-                for agent_label, gold_label in zip(output_df["agent_hate_label"], output_df["gold_hate_label"])
-            ]
+            if completed % save_every == 0 or completed == total_rows:
+                write_table(output_df, output_path)
+                print(f"Saved progress: {completed}/{total_rows} rows to {output_path}", flush=True)
+
         write_table(output_df, output_path)
         print(f"Wrote {len(output_df)} rows to {output_path}")
     except (HttpxConnectError, HttpxRequestError, requests.RequestException) as exc:
@@ -108,6 +111,91 @@ def make_config(args: argparse.Namespace) -> AppConfig:
     return AppConfig(**values)
 
 
+def print_classification_config(config: AppConfig, args: argparse.Namespace) -> None:
+    requested_device = os.getenv("MURIL_DEVICE", "auto")
+    resolved_device, cuda_note = resolve_muril_device_for_display(requested_device)
+    input_mode = "single text" if args.text else "file"
+    print("Classification configuration:", flush=True)
+    print(f"  Input mode: {input_mode}", flush=True)
+    if args.input:
+        print(f"  Input: {resolve_path(args.input)}", flush=True)
+    if args.output:
+        print(f"  Output: {resolve_path(args.output)}", flush=True)
+    print(f"  Ollama model: {config.ollama_model}", flush=True)
+    print(f"  Ollama base URL: {config.ollama_base_url}", flush=True)
+    print(f"  MuRIL model: {config.muril_model}", flush=True)
+    print(f"  MuRIL device requested: {requested_device}", flush=True)
+    print(f"  MuRIL device resolved: {resolved_device}", flush=True)
+    if cuda_note:
+        print(f"  MuRIL device note: {cuda_note}", flush=True)
+    print(f"  Chroma directory: {config.chroma_dir}", flush=True)
+    print(f"  Chroma collection: {config.chroma_collection}", flush=True)
+    print(f"  RAG top-k: {config.rag_top_k}", flush=True)
+    print(f"  Confidence threshold: {config.confidence_threshold}", flush=True)
+    print(f"  HITL queue: {config.hitl_queue}", flush=True)
+    print(f"  Save every: {max(1, args.save_every)} row(s)", flush=True)
+
+
+def resolve_muril_device_for_display(requested_device: str) -> tuple[str, str]:
+    try:
+        import torch
+    except ImportError:
+        return "unknown", "PyTorch is not installed."
+
+    requested = requested_device.strip().lower()
+    cuda_available = torch.cuda.is_available()
+    if requested == "auto":
+        if cuda_available:
+            return f"cuda ({torch.cuda.get_device_name(0)})", ""
+        return "cpu", "CUDA is not available in this Python environment, so MuRIL will run on CPU."
+    if requested == "cuda" and not cuda_available:
+        return "unavailable", "MURIL_DEVICE=cuda was requested, but this PyTorch install cannot see CUDA."
+    if requested == "cuda":
+        return f"cuda ({torch.cuda.get_device_name(0)})", ""
+    return requested, ""
+
+
+def initialize_output_df(df: pd.DataFrame, label_col: str | None) -> pd.DataFrame:
+    output_df = df.copy()
+    output_columns = [
+        "agent_normalized_text",
+        "agent_hate_label",
+        "agent_label_name",
+        "agent_confidence",
+        "agent_primary_topic",
+        "agent_topic_tags",
+        "agent_needs_review",
+        "agent_review_reason",
+        "agent_explanation",
+        "agent_retrieved_examples",
+        "agent_raw_response",
+    ]
+    for column in output_columns:
+        output_df[column] = pd.Series([None] * len(output_df), index=output_df.index, dtype="object")
+    if label_col:
+        output_df["gold_hate_label"] = pd.Series(
+            [normalize_label(value) for value in df[label_col]],
+            index=output_df.index,
+            dtype="object",
+        )
+        output_df["agent_label_matches_gold"] = pd.Series([None] * len(output_df), index=output_df.index, dtype="object")
+    return output_df
+
+
+def write_result_to_row(output_df: pd.DataFrame, idx, item: dict) -> None:
+    output_df.at[idx, "agent_normalized_text"] = item["normalized_text"]
+    output_df.at[idx, "agent_hate_label"] = item["label"]
+    output_df.at[idx, "agent_label_name"] = item["label_name"]
+    output_df.at[idx, "agent_confidence"] = item["confidence"]
+    output_df.at[idx, "agent_primary_topic"] = item["primary_topic"]
+    output_df.at[idx, "agent_topic_tags"] = "|".join(item["topic_tags"])
+    output_df.at[idx, "agent_needs_review"] = item["needs_review"]
+    output_df.at[idx, "agent_review_reason"] = item["review_reason"]
+    output_df.at[idx, "agent_explanation"] = item["explanation"]
+    output_df.at[idx, "agent_retrieved_examples"] = json.dumps(item["retrieved_examples"], ensure_ascii=False)
+    output_df.at[idx, "agent_raw_response"] = item["raw_response"]
+
+
 def public_result(result: dict) -> dict:
     return {
         "text": result.get("text", ""),
@@ -116,6 +204,8 @@ def public_result(result: dict) -> dict:
         "label_name": result.get("label_name", ""),
         "confidence": result.get("confidence", 0.0),
         "languages": result.get("languages", []),
+        "primary_topic": result.get("primary_topic", "unclear"),
+        "topic_tags": result.get("topic_tags", ["unclear"]),
         "needs_review": result.get("needs_review", False),
         "review_reason": result.get("review_reason", ""),
         "explanation": result.get("explanation", ""),
