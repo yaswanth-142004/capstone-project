@@ -12,6 +12,7 @@ from .config import AppConfig, resolve_path
 from .embeddings import MuRILEmbeddings
 from .io_utils import DEFAULT_LABEL_COLUMNS, DEFAULT_TEXT_COLUMNS, detect_column, discover_tables, read_table
 from .labels import label_tag, normalize_label
+from .logging_utils import get_app_logger, log_timing, setup_app_logging
 from .normalization import normalize_for_analysis
 from .syntax import analyze_syntax
 
@@ -35,51 +36,61 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = AppConfig()
+    logger = setup_app_logging(config.app_log)
     input_path = resolve_path(args.input)
     output_dir = resolve_path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     embedding_model = args.embedding_model or config.muril_model
     embedder = MuRILEmbeddings(model_name=embedding_model, batch_size=args.batch_size)
+    logger.info("embed_start input=%s output_dir=%s model=%s batch_size=%s", input_path, output_dir, embedding_model, args.batch_size)
 
-    files = discover_tables(input_path, recursive=args.recursive)
+    with log_timing("embed_discover_tables", input=input_path, recursive=args.recursive):
+        files = discover_tables(input_path, recursive=args.recursive)
     total = 0
     for file_path in files:
-        records = records_from_file(
-            file_path=file_path,
-            text_column=args.text_column,
-            label_column=args.label_column,
-            id_column=args.id_column,
-            limit=args.limit,
-        )
+        with log_timing("embed_records_from_file", path=file_path):
+            records = records_from_file(
+                file_path=file_path,
+                text_column=args.text_column,
+                label_column=args.label_column,
+                id_column=args.id_column,
+                limit=args.limit,
+            )
         if not records:
             print(f"Skipped {file_path}: no embeddable rows.")
+            logger.info("embed_file_skipped path=%s reason=no_embeddable_rows", file_path)
             continue
 
         texts = [record["normalized_text"] for record in records]
-        vectors = np.asarray(embedder.embed_documents(texts), dtype=np.float32)
+        with log_timing("embed_documents", path=file_path, rows=len(texts)):
+            vectors = np.asarray(embedder.embed_documents(texts), dtype=np.float32)
         metadata_df = pd.DataFrame(records)
 
         output_stem = safe_stem(file_path)
         vector_path = output_dir / f"{output_stem}_muril_vectors.npz"
         metadata_path = output_dir / f"{output_stem}_muril_metadata.csv"
 
-        np.savez_compressed(
-            vector_path,
-            embeddings=vectors,
-            ids=metadata_df["id"].to_numpy(dtype=str),
-            row_indices=metadata_df["row_index"].to_numpy(dtype=str),
-            normalized_texts=metadata_df["normalized_text"].to_numpy(dtype=object),
-            tags=metadata_df["tags"].to_numpy(dtype=object),
-        )
-        metadata_df.to_csv(metadata_path, index=False, encoding="utf-8-sig")
+        with log_timing("embed_write_vectors", path=vector_path, rows=len(records)):
+            np.savez_compressed(
+                vector_path,
+                embeddings=vectors,
+                ids=metadata_df["id"].to_numpy(dtype=str),
+                row_indices=metadata_df["row_index"].to_numpy(dtype=str),
+                normalized_texts=metadata_df["normalized_text"].to_numpy(dtype=object),
+                tags=metadata_df["tags"].to_numpy(dtype=object),
+            )
+        with log_timing("embed_write_metadata", path=metadata_path, rows=len(records)):
+            metadata_df.to_csv(metadata_path, index=False, encoding="utf-8-sig")
         total += len(records)
 
         print(f"Embedded {len(records)} rows from {file_path}")
         print(f"Vectors: {vector_path}")
         print(f"Metadata: {metadata_path}")
+        logger.info("embed_file_done path=%s rows=%s total=%s", file_path, len(records), total)
 
     print(f"Finished MuRIL embedding job. Total rows embedded: {total}")
+    logger.info("embed_done total=%s", total)
 
 
 def records_from_file(
