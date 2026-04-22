@@ -51,10 +51,17 @@ def documents_from_rows(rows: list[dict[str, Any]]) -> tuple[list[Document], lis
     return documents, ids
 
 
-def retrieve_examples(vector_store: Chroma, query: str, top_k: int) -> list[dict[str, Any]]:
+def retrieve_examples(
+    vector_store: Chroma,
+    query: str,
+    top_k: int,
+    max_distance: float | None = None,
+) -> list[dict[str, Any]]:
     results = vector_store.similarity_search_with_score(query, k=top_k)
     examples: list[dict[str, Any]] = []
     for document, distance in results:
+        if max_distance is not None and float(distance) > max_distance:
+            continue
         examples.append(
             {
                 "text": document.page_content,
@@ -65,3 +72,63 @@ def retrieve_examples(vector_store: Chroma, query: str, top_k: int) -> list[dict
             }
         )
     return examples
+
+
+def retrieve_diverse_examples(
+    vector_store: Chroma,
+    query: str,
+    total: int = 5,
+    fetch_k: int = 10,
+    max_distance: float | None = None,
+) -> list[dict[str, Any]]:
+    """Retrieve examples with label diversity: fetch more than needed, then balance by label.
+
+    This prevents the LLM from being biased by seeing only one label class.
+    """
+    results = vector_store.similarity_search_with_score(query, k=fetch_k)
+    by_label: dict[str, list[dict[str, Any]]] = {"0": [], "1": [], "other": []}
+    for document, distance in results:
+        if max_distance is not None and float(distance) > max_distance:
+            continue
+        item = {
+            "text": document.page_content,
+            "label": document.metadata.get("label", ""),
+            "source": document.metadata.get("source", ""),
+            "row_index": document.metadata.get("row_index", ""),
+            "distance": float(distance),
+        }
+        label_key = item["label"] if item["label"] in {"0", "1"} else "other"
+        by_label[label_key].append(item)
+
+    # Take up to ceil(total/2) from each label, prioritizing closest first
+    per_label = max(1, (total + 1) // 2)
+    diverse: list[dict[str, Any]] = []
+    for label_key in ["0", "1", "other"]:
+        diverse.extend(by_label[label_key][:per_label])
+
+    # Sort by distance and trim to total
+    diverse.sort(key=lambda x: x["distance"])
+    return diverse[:total]
+
+
+def auto_ingest_row(
+    vector_store: Chroma,
+    text: str,
+    original_text: str,
+    label: int,
+    source: str = "auto_ingest",
+    row_index: Any = "",
+) -> str:
+    """Ingest a single high-confidence verified row into ChromaDB and return its ID."""
+    doc_id = stable_id(source, row_index, text)
+    document = Document(
+        page_content=text,
+        metadata={
+            "label": str(label),
+            "source": source,
+            "row_index": str(row_index),
+            "original_text": original_text,
+        },
+    )
+    vector_store.add_documents([document], ids=[doc_id])
+    return doc_id

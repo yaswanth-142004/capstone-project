@@ -8,16 +8,35 @@ def build_reasoning_prompt(
     normalized_text: str,
     syntax_report: dict,
     retrieved_examples: list[dict],
+    lessons_block: str = "",
 ) -> str:
     examples_text = json.dumps(retrieved_examples, ensure_ascii=False, indent=2)
     syntax_text = json.dumps(syntax_report, ensure_ascii=False, indent=2)
+    lessons_section = f"\n{lessons_block}\n" if lessons_block else ""
     return f"""You are a safety auditor for Telugu-English and Indian code-mixed social media comments.
 
 Classify the target comment as hate/offensive speech.
+Also assign one primary topic and optional topic tags.
 
 Labels:
 - 1 = hate or offensive speech, including slurs, dehumanization, targeted abuse, threats, or attacks on protected or political/social groups.
 - 0 = non-hate or not offensive, including criticism, ordinary disagreement, news, jokes without abuse, or unclear benign comments.
+{lessons_section}
+Topic choices:
+- politics
+- government
+- religion
+- sports
+- entertainment
+- caste_or_community
+- gender_or_sexuality
+- regional_or_nationality
+- personal_abuse
+- general
+- unclear
+
+Use "general" when the comment is ordinary conversation without a clear domain.
+Use "unclear" only when there is not enough context to infer a topic.
 
 Use the retrieved examples only as cultural and linguistic context. Do not copy their labels blindly.
 Return only valid JSON with this schema:
@@ -26,6 +45,8 @@ Return only valid JSON with this schema:
   "label_name": "Non-Offensive",
   "confidence": 0.0,
   "languages": ["Telugu", "English"],
+  "primary_topic": "politics",
+  "topic_tags": ["politics", "personal_abuse"],
   "rationale": "brief explanation grounded in the text",
   "signals": ["short signal strings"]
 }}

@@ -40,7 +40,7 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     embedding_model = args.embedding_model or config.muril_model
-    embedder = MuRILEmbeddings(model_name=embedding_model, batch_size=args.batch_size)
+    embedder = MuRILEmbeddings(model_name=embedding_model, batch_size=args.batch_size,device=)
 
     files = discover_tables(input_path, recursive=args.recursive)
     total = 0

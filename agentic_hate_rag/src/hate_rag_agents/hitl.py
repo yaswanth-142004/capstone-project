@@ -17,6 +17,8 @@ def append_review_item(path: Path, item: dict[str, Any]) -> None:
         "predicted_label": item.get("label", ""),
         "predicted_label_name": item.get("label_name", ""),
         "confidence": item.get("confidence", ""),
+        "primary_topic": item.get("primary_topic", ""),
+        "topic_tags": "|".join(str(tag) for tag in item.get("topic_tags", [])),
         "reason": item.get("review_reason", ""),
         "explanation": item.get("explanation", ""),
         "retrieved_examples": json.dumps(item.get("retrieved_examples", []), ensure_ascii=False),
