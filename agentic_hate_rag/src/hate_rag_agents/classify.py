@@ -7,6 +7,7 @@ from pathlib import Path
 
 import requests
 import pandas as pd
+from dotenv import load_dotenv
 from httpx import ConnectError as HttpxConnectError, RequestError as HttpxRequestError
 
 from .config import AppConfig, resolve_path
@@ -15,6 +16,7 @@ from .io_utils import DEFAULT_LABEL_COLUMNS, DEFAULT_TEXT_COLUMNS, detect_column
 from .labels import normalize_label
 from .logging_utils import get_app_logger, log_timing, setup_app_logging
 from .ollama_health import check_ollama, format_ollama_error
+from .vllm_health import check_vllm, format_vllm_error
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,12 +24,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text", help="Classify a single comment.")
     parser.add_argument("--input", help="CSV/XLSX file to classify.")
     parser.add_argument("--output", help="Output CSV/XLSX path for file mode.")
+    parser.add_argument("--env-file", help="Optional env file to load before building config.")
     parser.add_argument("--text-column", help="Text column for file mode.")
     parser.add_argument("--label-column", help="Optional gold label column to copy and compare in file mode.")
     parser.add_argument("--limit", type=int, help="Optional row limit for smoke tests.")
-    parser.add_argument("--model", help="Override Ollama model.")
+    parser.add_argument("--llm-provider", choices=["ollama", "vllm"], help="Which LLM backend to use.")
+    parser.add_argument("--model", help="Override the active LLM model name.")
     parser.add_argument("--ollama-base-url", help="Override Ollama base URL.")
-    parser.add_argument("--skip-ollama-check", action="store_true", help="Skip the startup Ollama health check.")
+    parser.add_argument("--vllm-base-url", help="Override vLLM base URL.")
+    parser.add_argument("--vllm-api-key", help="Optional bearer token for vLLM OpenAI-compatible serving.")
+    parser.add_argument("--skip-llm-check", action="store_true", help="Skip the startup LLM health check.")
+    parser.add_argument("--skip-ollama-check", action="store_true", help="Backward-compatible alias for --skip-llm-check.")
     parser.add_argument("--chroma-dir", help="Override Chroma persistence directory.")
     parser.add_argument("--collection", help="Override Chroma collection name.")
     parser.add_argument("--confidence-threshold", type=float, help="Override HITL threshold.")
@@ -40,17 +47,15 @@ def main() -> None:
     args = parse_args()
     if not args.text and not args.input:
         raise SystemExit("Pass either --text or --input.")
+    if args.env_file:
+        load_dotenv(args.env_file, override=True)
 
     config = make_config(args)
     logger = setup_app_logging(config.app_log)
     logger.info("classify_start input=%s output=%s", args.input or "", args.output or "")
     print_classification_config(config, args)
-    if not args.skip_ollama_check:
-        with log_timing("ollama_health_check", model=config.ollama_model, base_url=config.ollama_base_url):
-            health = check_ollama(config.ollama_base_url, config.ollama_model)
-        if not health.reachable or not health.model_available:
-            logger.error("ollama_health_failed reachable=%s model_available=%s", health.reachable, health.model_available)
-            raise SystemExit(format_ollama_error(config.ollama_base_url, config.ollama_model, health))
+    if not (args.skip_llm_check or args.skip_ollama_check):
+        ensure_llm_health(config, logger)
 
     with log_timing("build_graph", chroma_dir=config.chroma_dir, collection=config.chroma_collection):
         graph = build_graph(config)
@@ -121,18 +126,28 @@ def main() -> None:
         logger.info("classify_done mode=file rows=%s output=%s", len(output_df), output_path)
     except (HttpxConnectError, HttpxRequestError, requests.RequestException) as exc:
         logger.exception("classify_http_error")
-        raise SystemExit(
-            format_ollama_error(config.ollama_base_url, config.ollama_model)
-            + f"\n\nRuntime error: {type(exc).__name__}: {exc}"
-        ) from exc
+        error_message = (
+            format_vllm_error(config.vllm_base_url, config.vllm_model)
+            if config.llm_provider == "vllm"
+            else format_ollama_error(config.ollama_base_url, config.ollama_model)
+        )
+        raise SystemExit(error_message + f"\n\nRuntime error: {type(exc).__name__}: {exc}") from exc
 
 
 def make_config(args: argparse.Namespace) -> AppConfig:
     base = AppConfig()
+    llm_provider = (args.llm_provider or base.llm_provider).strip().lower()
+    if llm_provider not in {"ollama", "vllm"}:
+        raise SystemExit(f"Unsupported --llm-provider {llm_provider!r}. Use 'ollama' or 'vllm'.")
     values = {
-        "ollama_model": args.model or base.ollama_model,
+        "llm_provider": llm_provider,
+        "ollama_model": (args.model if llm_provider == "ollama" and args.model else base.ollama_model),
         "ollama_base_url": args.ollama_base_url or base.ollama_base_url,
         "ollama_timeout_seconds": base.ollama_timeout_seconds,
+        "vllm_model": (args.model if llm_provider == "vllm" and args.model else base.vllm_model),
+        "vllm_base_url": args.vllm_base_url or base.vllm_base_url,
+        "vllm_api_key": args.vllm_api_key or base.vllm_api_key,
+        "vllm_timeout_seconds": base.vllm_timeout_seconds,
         "muril_model": base.muril_model,
         "chroma_dir": resolve_path(args.chroma_dir) if args.chroma_dir else base.chroma_dir,
         "chroma_collection": args.collection or base.chroma_collection,
@@ -155,9 +170,17 @@ def print_classification_config(config: AppConfig, args: argparse.Namespace) -> 
         print(f"  Input: {resolve_path(args.input)}", flush=True)
     if args.output:
         print(f"  Output: {resolve_path(args.output)}", flush=True)
-    print(f"  Ollama model: {config.ollama_model}", flush=True)
-    print(f"  Ollama base URL: {config.ollama_base_url}", flush=True)
-    print(f"  Ollama timeout: {config.ollama_timeout_seconds}s", flush=True)
+    print(f"  LLM provider: {config.llm_provider}", flush=True)
+    print(f"  LLM model: {config.active_model}", flush=True)
+    print(f"  LLM base URL: {config.active_base_url}", flush=True)
+    print(f"  LLM timeout: {config.active_timeout_seconds}s", flush=True)
+    if config.llm_provider == "ollama":
+        print(f"  Ollama model: {config.ollama_model}", flush=True)
+        print(f"  Ollama base URL: {config.ollama_base_url}", flush=True)
+    else:
+        print(f"  vLLM model: {config.vllm_model}", flush=True)
+        print(f"  vLLM base URL: {config.vllm_base_url}", flush=True)
+        print(f"  vLLM API key set: {'yes' if config.vllm_api_key else 'no'}", flush=True)
     print(f"  MuRIL model: {config.muril_model}", flush=True)
     print(f"  MuRIL device requested: {requested_device}", flush=True)
     print(f"  MuRIL device resolved: {resolved_device}", flush=True)
@@ -173,9 +196,17 @@ def print_classification_config(config: AppConfig, args: argparse.Namespace) -> 
     logger = get_app_logger()
     for line in [
         f"config input_mode={input_mode}",
+        f"config llm_provider={config.llm_provider}",
+        f"config active_model={config.active_model}",
+        f"config active_base_url={config.active_base_url}",
+        f"config active_timeout_seconds={config.active_timeout_seconds}",
         f"config ollama_model={config.ollama_model}",
         f"config ollama_base_url={config.ollama_base_url}",
         f"config ollama_timeout_seconds={config.ollama_timeout_seconds}",
+        f"config vllm_model={config.vllm_model}",
+        f"config vllm_base_url={config.vllm_base_url}",
+        f"config vllm_api_key_set={bool(config.vllm_api_key)}",
+        f"config vllm_timeout_seconds={config.vllm_timeout_seconds}",
         f"config muril_model={config.muril_model}",
         f"config muril_device_requested={requested_device}",
         f"config muril_device_resolved={resolved_device}",
@@ -188,6 +219,22 @@ def print_classification_config(config: AppConfig, args: argparse.Namespace) -> 
         f"config save_every={max(1, args.save_every)}",
     ]:
         logger.info(line)
+
+
+def ensure_llm_health(config: AppConfig, logger) -> None:
+    if config.llm_provider == "vllm":
+        with log_timing("vllm_health_check", model=config.vllm_model, base_url=config.vllm_base_url):
+            health = check_vllm(config.vllm_base_url, config.vllm_model, api_key=config.vllm_api_key)
+        if not health.reachable or not health.model_available:
+            logger.error("vllm_health_failed reachable=%s model_available=%s", health.reachable, health.model_available)
+            raise SystemExit(format_vllm_error(config.vllm_base_url, config.vllm_model, health))
+        return
+
+    with log_timing("ollama_health_check", model=config.ollama_model, base_url=config.ollama_base_url):
+        health = check_ollama(config.ollama_base_url, config.ollama_model)
+    if not health.reachable or not health.model_available:
+        logger.error("ollama_health_failed reachable=%s model_available=%s", health.reachable, health.model_available)
+        raise SystemExit(format_ollama_error(config.ollama_base_url, config.ollama_model, health))
 
 
 def resolve_muril_device_for_display(requested_device: str) -> tuple[str, str]:

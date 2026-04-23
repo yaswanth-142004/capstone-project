@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 from typing import Any, Literal, TypedDict
 
-from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 
 from .config import AppConfig
 from .hitl import append_review_item
+from .llm_clients import build_llm
 from .logging_utils import get_app_logger, log_timing
 from .normalization import normalize_for_analysis
 from .prompts import build_reasoning_prompt
@@ -43,13 +43,7 @@ def build_graph(config: AppConfig):
         collection_name=config.chroma_collection,
         embedding_model=config.muril_model,
     )
-    llm = ChatOllama(
-        model=config.ollama_model,
-        base_url=config.ollama_base_url,
-        temperature=config.temperature,
-        format="json",
-        sync_client_kwargs={"timeout": config.ollama_timeout_seconds},
-    )
+    llm = build_llm(config)
 
     def normalize_node(state: ClassificationState) -> ClassificationState:
         row_id = state.get("row_id", "")
@@ -86,16 +80,17 @@ def build_graph(config: AppConfig):
                 retrieved_examples=state.get("retrieved_examples", []),
             )
             logger.info(
-                "ollama_invoke_start row_id=%s prompt_chars=%s model=%s timeout_s=%s",
+                "llm_invoke_start row_id=%s prompt_chars=%s provider=%s model=%s timeout_s=%s",
                 row_id,
                 len(prompt),
-                config.ollama_model,
-                config.ollama_timeout_seconds,
+                config.llm_provider,
+                config.active_model,
+                config.active_timeout_seconds,
             )
-            with log_timing("ollama_invoke", row_id=row_id, model=config.ollama_model):
+            with log_timing("llm_invoke", row_id=row_id, provider=config.llm_provider, model=config.active_model):
                 response = llm.invoke(prompt)
             raw = str(response.content)
-            logger.info("ollama_invoke_done row_id=%s response_chars=%s", row_id, len(raw))
+            logger.info("llm_invoke_done row_id=%s provider=%s response_chars=%s", row_id, config.llm_provider, len(raw))
             try:
                 parsed = _parse_llm_json(raw)
             except (json.JSONDecodeError, ValueError, TypeError) as exc:
