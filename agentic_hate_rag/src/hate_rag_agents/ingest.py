@@ -10,6 +10,7 @@ import pandas as pd
 from .config import AppConfig, resolve_path
 from .io_utils import DEFAULT_LABEL_COLUMNS, DEFAULT_TEXT_COLUMNS, detect_column, discover_tables, read_table
 from .labels import normalize_label
+from .logging_utils import get_app_logger, log_timing, setup_app_logging
 from .normalization import normalize_for_analysis
 from .rag_store import documents_from_rows, make_vector_store
 
@@ -32,64 +33,46 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = AppConfig()
+    logger = setup_app_logging(config.app_log)
     chroma_dir = resolve_path(args.chroma_dir) if args.chroma_dir else config.chroma_dir
     collection = args.collection or config.chroma_collection
     embedding_model = args.embedding_model or config.muril_model
+    logger.info("ingest_start input=%s chroma_dir=%s collection=%s reset=%s add_batch_size=%s", args.input, chroma_dir, collection, args.reset_store, args.add_batch_size)
+
+    if args.reset_store:
+        with log_timing("ingest_reset_store", chroma_dir=chroma_dir):
+            reset_store(chroma_dir)
 
     if args.reset_store:
         reset_store(chroma_dir)
 
-    vector_store = make_vector_store(
-        persist_directory=chroma_dir,
-        collection_name=collection,
-        embedding_model=embedding_model,
-    )
+    with log_timing("ingest_make_vector_store", chroma_dir=chroma_dir, collection=collection):
+        vector_store = make_vector_store(
+            persist_directory=chroma_dir,
+            collection_name=collection,
+            embedding_model=embedding_model,
+        )
 
-    files = discover_tables(resolve_path(args.input), recursive=args.recursive)
+    with log_timing("ingest_discover_tables", input=args.input, recursive=args.recursive):
+        files = discover_tables(resolve_path(args.input), recursive=args.recursive)
     total = 0
     for file_path in files:
-        rows = rows_from_file(file_path, args.text_column, args.label_column, args.limit)
+        with log_timing("ingest_rows_from_file", path=file_path):
+            rows = rows_from_file(file_path, args.text_column, args.label_column, args.limit)
         if not rows:
             print(f"Skipped {file_path}: no labelled rows.")
+            logger.info("ingest_file_skipped path=%s reason=no_labelled_rows", file_path)
             continue
         documents, ids = documents_from_rows(rows)
-        add_documents_in_batches(vector_store, documents, ids, args.add_batch_size)
+        with log_timing("ingest_add_documents", path=file_path, rows=len(documents)):
+            add_documents_in_batches(vector_store, documents, ids, args.add_batch_size)
         total += len(documents)
         print(f"Ingested {len(documents)} rows from {file_path}")
+        logger.info("ingest_file_done path=%s rows=%s total=%s", file_path, len(documents), total)
 
     print(f"Finished. Total rows ingested: {total}")
     print(f"Chroma directory: {chroma_dir}")
     print(f"Collection: {collection}")
-
-
-def add_documents_in_batches(vector_store, documents: list, ids: list[str], batch_size: int) -> None:
-    if batch_size < 1:
-        raise ValueError("--add-batch-size must be at least 1.")
-
-    total = len(documents)
-    if total <= batch_size:
-        vector_store.add_documents(documents, ids=ids)
-        return
-
-    total_batches = (total + batch_size - 1) // batch_size
-    print(f"Adding {total} embedded documents to Chroma in {total_batches} batches...", flush=True)
-    for batch_number, start in enumerate(range(0, total, batch_size), start=1):
-        end = min(start + batch_size, total)
-        vector_store.add_documents(documents[start:end], ids=ids[start:end])
-        print(f"Chroma add progress: {end}/{total} documents ({batch_number}/{total_batches} batches)", flush=True)
-
-
-def reset_store(chroma_dir: Path) -> None:
-    chroma_dir = chroma_dir.resolve()
-    if not chroma_dir.exists():
-        print(f"No existing Chroma store found at {chroma_dir}")
-        return
-    if not chroma_dir.is_dir():
-        raise ValueError(f"Refusing to reset non-directory Chroma path: {chroma_dir}")
-    if chroma_dir.anchor == str(chroma_dir):
-        raise ValueError(f"Refusing to reset filesystem root: {chroma_dir}")
-    shutil.rmtree(chroma_dir)
-    print(f"Deleted existing Chroma store: {chroma_dir}")
 
 
 def rows_from_file(

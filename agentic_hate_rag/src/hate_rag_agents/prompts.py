@@ -38,6 +38,22 @@ Topic choices:
 Use "general" when the comment is ordinary conversation without a clear domain.
 Use "unclear" only when there is not enough context to infer a topic.
 
+Topic choices:
+- politics
+- government
+- religion
+- sports
+- entertainment
+- caste_or_community
+- gender_or_sexuality
+- regional_or_nationality
+- personal_abuse
+- general
+- unclear
+
+Use "general" when the comment is ordinary conversation without a clear domain.
+Use "unclear" only when there is not enough context to infer a topic.
+
 Use the retrieved examples only as cultural and linguistic context. Do not copy their labels blindly.
 Return only valid JSON with this schema:
 {{

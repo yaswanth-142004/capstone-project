@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import os
 from pathlib import Path
 
 import requests
 import pandas as pd
+from dotenv import load_dotenv
 from httpx import ConnectError as HttpxConnectError, RequestError as HttpxRequestError
 
 from .config import AppConfig, resolve_path
@@ -14,11 +16,13 @@ from .eval import EvalTracker, generate_eval_summary, print_eval_summary
 from .graph import build_graph
 from .io_utils import DEFAULT_LABEL_COLUMNS, DEFAULT_TEXT_COLUMNS, detect_column, read_table, write_table
 from .labels import normalize_label
+from .logging_utils import get_app_logger, log_timing, setup_app_logging
 from .ollama_health import check_ollama, format_ollama_error
 from .rag_store import auto_ingest_row, make_vector_store
 from .reflection import LessonStore, analyze_errors
 
 from langchain_ollama import ChatOllama
+from .vllm_health import check_vllm, format_vllm_error
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,12 +30,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text", help="Classify a single comment.")
     parser.add_argument("--input", help="CSV/XLSX file to classify.")
     parser.add_argument("--output", help="Output CSV/XLSX path for file mode.")
+    parser.add_argument("--env-file", help="Optional env file to load before building config.")
     parser.add_argument("--text-column", help="Text column for file mode.")
     parser.add_argument("--label-column", help="Optional gold label column to copy and compare in file mode.")
     parser.add_argument("--limit", type=int, help="Optional row limit for smoke tests.")
-    parser.add_argument("--model", help="Override Ollama model.")
+    parser.add_argument("--llm-provider", choices=["ollama", "vllm"], help="Which LLM backend to use.")
+    parser.add_argument("--model", help="Override the active LLM model name.")
     parser.add_argument("--ollama-base-url", help="Override Ollama base URL.")
-    parser.add_argument("--skip-ollama-check", action="store_true", help="Skip the startup Ollama health check.")
+    parser.add_argument("--vllm-base-url", help="Override vLLM base URL.")
+    parser.add_argument("--vllm-api-key", help="Optional bearer token for vLLM OpenAI-compatible serving.")
+    parser.add_argument("--skip-llm-check", action="store_true", help="Skip the startup LLM health check.")
+    parser.add_argument("--skip-ollama-check", action="store_true", help="Backward-compatible alias for --skip-llm-check.")
     parser.add_argument("--chroma-dir", help="Override Chroma persistence directory.")
     parser.add_argument("--collection", help="Override Chroma collection name.")
     parser.add_argument("--confidence-threshold", type=float, help="Override HITL threshold.")
@@ -41,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-auto-ingest", action="store_true", help="Disable auto-ingestion of high-confidence verified rows.")
     parser.add_argument("--clear-lessons", action="store_true", help="Clear learned lessons from previous runs before starting.")
     parser.add_argument("--eval-batch-size", type=int, help="Override batch size for error analysis (default: 50).")
+    parser.add_argument("--save-every", type=int, default=1, help="Write output progress after this many classified rows.")
+    parser.add_argument("--log-file", help="Path to app log file. Defaults to APP_LOG or ./outputs/app.log.")
     return parser.parse_args()
 
 
@@ -48,25 +59,32 @@ def main() -> None:
     args = parse_args()
     if not args.text and not args.input:
         raise SystemExit("Pass either --text or --input.")
+    if args.env_file:
+        load_dotenv(args.env_file, override=True)
 
     config = make_config(args)
     print_classification_config(config, args)
-    if not args.skip_ollama_check:
-        health = check_ollama(config.ollama_base_url, config.ollama_model)
-        if not health.reachable or not health.model_available:
-            raise SystemExit(format_ollama_error(config.ollama_base_url, config.ollama_model, health))
+    logger = setup_app_logging(config.app_log)
+    logger.info("classify_start input=%s output=%s", args.input or "", args.output or "")
+    print_classification_config(config, args)
+    if not (args.skip_llm_check or args.skip_ollama_check):
+        ensure_llm_health(config, logger)
 
-    graph = build_graph(config)
+    with log_timing("build_graph", chroma_dir=config.chroma_dir, collection=config.chroma_collection):
+        graph = build_graph(config)
 
     try:
         if args.text:
-            result = graph.invoke({"text": args.text})
+            with log_timing("classify_single_text", chars=len(args.text)):
+                result = graph.invoke({"text": args.text, "row_id": "single"})
             print(json.dumps(public_result(result), ensure_ascii=False, indent=2))
+            logger.info("classify_done mode=single_text")
             return
 
         input_path = resolve_path(args.input)
         output_path = resolve_path(args.output) if args.output else input_path.with_name(f"{input_path.stem}_agentic_classified.csv")
-        df = read_table(input_path)
+        with log_timing("read_input", path=input_path):
+            df = read_table(input_path)
         if args.limit:
             df = df.head(args.limit).copy()
         text_col = detect_column(df, args.text_column, DEFAULT_TEXT_COLUMNS, "text")
@@ -223,23 +241,36 @@ def main() -> None:
             print(f"Total lessons learned: {len(lesson_store.lessons)} (saved to {lessons_path})")
 
     except (HttpxConnectError, HttpxRequestError, requests.RequestException) as exc:
-        raise SystemExit(
-            format_ollama_error(config.ollama_base_url, config.ollama_model)
-            + f"\n\nRuntime error: {type(exc).__name__}: {exc}"
-        ) from exc
+        logger.exception("classify_http_error")
+        error_message = (
+            format_vllm_error(config.vllm_base_url, config.vllm_model)
+            if config.llm_provider == "vllm"
+            else format_ollama_error(config.ollama_base_url, config.ollama_model)
+        )
+        raise SystemExit(error_message + f"\n\nRuntime error: {type(exc).__name__}: {exc}") from exc
 
 
 def make_config(args: argparse.Namespace) -> AppConfig:
     base = AppConfig()
+    llm_provider = (args.llm_provider or base.llm_provider).strip().lower()
+    if llm_provider not in {"ollama", "vllm"}:
+        raise SystemExit(f"Unsupported --llm-provider {llm_provider!r}. Use 'ollama' or 'vllm'.")
     values = {
-        "ollama_model": args.model or base.ollama_model,
+        "llm_provider": llm_provider,
+        "ollama_model": (args.model if llm_provider == "ollama" and args.model else base.ollama_model),
         "ollama_base_url": args.ollama_base_url or base.ollama_base_url,
+        "ollama_timeout_seconds": base.ollama_timeout_seconds,
+        "vllm_model": (args.model if llm_provider == "vllm" and args.model else base.vllm_model),
+        "vllm_base_url": args.vllm_base_url or base.vllm_base_url,
+        "vllm_api_key": args.vllm_api_key or base.vllm_api_key,
+        "vllm_timeout_seconds": base.vllm_timeout_seconds,
         "muril_model": base.muril_model,
         "chroma_dir": resolve_path(args.chroma_dir) if args.chroma_dir else base.chroma_dir,
         "chroma_collection": args.collection or base.chroma_collection,
         "rag_top_k": base.rag_top_k,
         "confidence_threshold": args.confidence_threshold if args.confidence_threshold is not None else base.confidence_threshold,
         "hitl_queue": base.hitl_queue,
+        "app_log": resolve_path(args.log_file) if args.log_file else base.app_log,
         "temperature": base.temperature,
         "reflection_enabled": base.reflection_enabled and not args.no_reflection,
         "max_reflection_retries": base.max_reflection_retries,

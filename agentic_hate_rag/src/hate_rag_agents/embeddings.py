@@ -7,14 +7,22 @@ from typing import Iterable
 import numpy as np
 from langchain_core.embeddings import Embeddings
 
+from .logging_utils import get_app_logger, log_timing
+
 
 class MuRILEmbeddings(Embeddings):
     """LangChain embeddings adapter for MuRIL-style Hugging Face encoders."""
 
     def __init__(
+        
         self,
+       
         model_name: str = "google/muril-base-cased",
+       
         batch_size: int = 16,
+        device: str | None = None,
+        show_progress: bool | None = None,
+    ,
         device: str | None = None,
         show_progress: bool | None = None,
     ):
@@ -33,14 +41,23 @@ class MuRILEmbeddings(Embeddings):
         import torch
         from transformers import AutoModel, AutoTokenizer
 
+        logger = get_app_logger()
         self._torch = torch
         self._device = self._resolve_device(torch)
         if self.show_progress:
             print(f"Loading MuRIL embedding model on {self._device}: {self.model_name}", flush=True)
             if self.device.strip().lower() == "auto" and self._device == "cpu" and not torch.cuda.is_available():
                 print("MuRIL device note: CUDA is not available in this Python environment; using CPU.", flush=True)
-        self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-        self._model = AutoModel.from_pretrained(self.model_name).to(self._device)
+        self._device = self._resolve_device(torch)
+        if self.show_progress:
+            print(f"Loading MuRIL embedding model on {self._device}: {self.model_name}", flush=True)
+            if self.device.strip().lower() == "auto" and self._device == "cpu" and not torch.cuda.is_available():
+                print("MuRIL device note: CUDA is not available in this Python environment; using CPU.", flush=True)
+        logger.info("muril_load_start model=%s device=%s", self.model_name, self._device)
+        with log_timing("muril_tokenizer_load", model=self.model_name):
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        with log_timing("muril_model_load", model=self.model_name, device=self._device):
+            self._model = AutoModel.from_pretrained(self.model_name).to(self._device).to(self._device)
         self._model.eval()
 
     def _resolve_device(self, torch) -> str:

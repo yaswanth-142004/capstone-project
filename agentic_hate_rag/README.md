@@ -7,6 +7,7 @@ It uses:
 - LangGraph for the multi-agent execution graph.
 - LangChain for LLM, tool, and vector store integration.
 - Ollama-hosted open-source instruction models such as `llama3.1:8b`, `gemma2:9b`, or an Aya model.
+- Optional vLLM-hosted Gemma serving through an OpenAI-compatible endpoint or the included wrapper service.
 - MuRIL embeddings for multilingual and transliterated Indian text retrieval.
 - ChromaDB as the local RAG memory.
 - Optional transliteration and syntactic code-mixing checks before reasoning.
@@ -62,10 +63,15 @@ ollama serve
 
 Copy `.env.example` to `.env` if you want to override defaults.
 
+For a separate vLLM-only setup, copy `.env.vllm.example` to `.env.vllm`.
+
 Important defaults:
 
+- `LLM_PROVIDER=ollama`
 - `OLLAMA_MODEL=gemma4:26b`
 - `OLLAMA_BASE_URL=http://127.0.0.1:11434`
+- `VLLM_MODEL=google/gemma-2-9b-it`
+- `VLLM_BASE_URL=http://127.0.0.1:8090`
 - `MURIL_MODEL=google/muril-base-cased`
 - `CHROMA_DIR=./storage/chroma`
 - `CHROMA_COLLECTION=code_mixed_hate_memory`
@@ -80,6 +86,16 @@ ngrok http 8088
 ```
 
 The service always uses `gemma4:26b` and has no bearer-token auth. See `OLLAMA_FASTAPI_SERVICE.md` for endpoints and curl examples using `https://accent-copied-scrabble.ngrok-free.dev`.
+
+## Serve Gemma Through vLLM FastAPI
+
+This project also includes a separate FastAPI service for wrapping a vLLM-served Gemma model with its own env file:
+
+```powershell
+python ..\vllm_fastapi_service.py --env-file .\.env.vllm
+```
+
+See `VLLM_FASTAPI_SERVICE.md` for the full flow, including the backend vLLM server command and health-check examples.
 
 ## Ingest Examples Into RAG Memory
 
@@ -126,6 +142,24 @@ python -m hate_rag_agents.classify `
   --text "mee party vallu ila matladatam tappu"
 ```
 
+To classify through the vLLM service instead of Ollama:
+
+```powershell
+python -m hate_rag_agents.classify `
+  --llm-provider vllm `
+  --vllm-base-url http://127.0.0.1:8090 `
+  --model google/gemma-2-9b-it `
+  --text "mee party vallu ila matladatam tappu"
+```
+
+Or use the separate env file directly:
+
+```powershell
+python -m hate_rag_agents.classify `
+  --env-file .\.env.vllm `
+  --text "mee party vallu ila matladatam tappu"
+```
+
 ## Classify A File
 
 ```powershell
@@ -163,5 +197,6 @@ python -m hate_rag_agents.ingest `
 - The transliteration module supports optional backends and otherwise leaves Romanized text in place while preserving the normalized original.
 - The syntax checker provides practical signals now and has a clear adapter point for SyMCoM.
 - The LLM prompt asks for concise reasoning and JSON output, not hidden chain-of-thought.
+- `classify.py` now supports both `ollama` and `vllm` providers through `--llm-provider`.
 - See `PROJECT_PLAN.md` for the full project flow, CSV format, embedding/tag rules, and module-level implementation.
 - See `IMPLEMENTATION_PLAN.md` for the shorter phase-by-phase build plan.
