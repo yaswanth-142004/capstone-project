@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -98,13 +99,27 @@ Misclassified examples:
 {examples_text}
 """
 
+    print(
+        f"Sending {len(misclassified_rows)} misclassified row(s) to the lesson-analysis LLM...",
+        flush=True,
+    )
+    started_at = time.perf_counter()
     try:
         response = llm.invoke(prompt)
+        elapsed = time.perf_counter() - started_at
+        print(f"Lesson-analysis LLM response received in {elapsed:.1f}s.", flush=True)
         raw = str(response.content)
         parsed = _parse_json_response(raw)
         lessons = parsed.get("lessons", [])
         if isinstance(lessons, list):
-            return _sanitize_lessons(lessons)
+            cleaned = _sanitize_lessons(lessons)
+            if not cleaned and lessons:
+                print(
+                    "Lesson response was received, but all returned lessons were filtered out as malformed or low-quality.",
+                    flush=True,
+                )
+            return cleaned
+        print("Lesson-analysis LLM returned JSON, but it did not contain a valid lessons array.", flush=True)
     except Exception as exc:
         print(f"Warning: Error analysis LLM call failed: {type(exc).__name__}: {exc}", flush=True)
 

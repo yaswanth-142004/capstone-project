@@ -94,15 +94,24 @@ def main() -> None:
         print("Cleared all previously learned lessons.", flush=True)
 
     batch_size = args.eval_batch_size or config.eval_batch_size
-    for start in range(0, tracker.total, batch_size):
+    total_batches = (tracker.total + batch_size - 1) // batch_size
+    print(
+        f"Starting lesson extraction across {total_batches} batch(es) with batch size {batch_size}.",
+        flush=True,
+    )
+    for batch_index, start in enumerate(range(0, tracker.total, batch_size), start=1):
         end = min(start + batch_size, tracker.total)
         batch_misclassified = tracker.pop_recent_misclassified(start)
         batch_misclassified = [item for item in batch_misclassified if item.get("tracker_index", -1) < end]
         if not batch_misclassified:
+            print(
+                f"Batch {batch_index}/{total_batches} (tracker rows {start}-{end - 1}): no misclassifications, skipping.",
+                flush=True,
+            )
             continue
         print(
-            f"\n--- Batch error analysis (tracker rows {start}-{end - 1}, "
-            f"{len(batch_misclassified)} errors) ---",
+            f"\n--- Batch {batch_index}/{total_batches} error analysis "
+            f"(tracker rows {start}-{end - 1}, {len(batch_misclassified)} errors) ---",
             flush=True,
         )
         new_lessons = analyze_errors(llm, batch_misclassified)
@@ -113,6 +122,10 @@ def main() -> None:
                 print(f"  - {lesson}", flush=True)
         else:
             print("No new lessons extracted from this batch.", flush=True)
+        print(
+            f"Finished batch {batch_index}/{total_batches}. Running lesson count: {len(lesson_store.lessons)}",
+            flush=True,
+        )
 
     print(f"Total lessons learned: {len(lesson_store.lessons)} (saved to {lesson_store.path})", flush=True)
     logger.info("autoloop_done total=%s lessons=%s summary=%s", tracker.total, len(lesson_store.lessons), summary_path)
