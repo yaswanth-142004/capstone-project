@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal, TypedDict
+from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -11,17 +11,13 @@ from .llm_clients import build_llm
 from .logging_utils import get_app_logger, log_timing
 from .normalization import normalize_for_analysis
 from .prompts import build_reasoning_prompt
-from .rag_store import (
-    auto_ingest_row,
-    make_vector_store,
-    retrieve_diverse_examples,
-    retrieve_examples,
-)
+from .rag_store import make_vector_store, retrieve_diverse_examples, retrieve_examples
 from .reflection import build_reflection_prompt
 from .syntax import analyze_syntax
 
 
 class ClassificationState(TypedDict, total=False):
+    row_id: str
     text: str
     normalized_text: str
     cleaned_text: str
@@ -40,14 +36,12 @@ class ClassificationState(TypedDict, total=False):
     parse_error: str
     needs_review: bool
     review_reason: str
-    # Reflection loop fields
     reflection_count: int
     first_pass_label: int
     first_pass_confidence: float
     first_pass_explanation: str
     reflection_used: bool
     reflection_note: str
-    # Lessons injected from error analysis
     lessons_block: str
 
 
@@ -73,8 +67,9 @@ def build_graph(config: AppConfig):
 
     def syntax_node(state: ClassificationState) -> ClassificationState:
         row_id = state.get("row_id", "")
-        with log_timing("node_syntax", row_id=row_id, chars=len(state.get("normalized_text", ""))):
-            report = analyze_syntax(state.get("normalized_text", ""))
+        text = state.get("normalized_text", "")
+        with log_timing("node_syntax", row_id=row_id, chars=len(text)):
+            report = analyze_syntax(text)
             return {**state, "syntax_report": report.as_dict()}
 
     def retrieve_node(state: ClassificationState) -> ClassificationState:
@@ -82,11 +77,11 @@ def build_graph(config: AppConfig):
         query = state.get("normalized_text") or state["text"]
         with log_timing("node_retrieval", row_id=row_id, chars=len(query), top_k=config.rag_top_k):
             examples = retrieve_examples(
-            vector_store,
-            query=query,
-            top_k=config.rag_top_k,
-            max_distance=config.max_retrieval_distance,
-        )
+                vector_store,
+                query=query,
+                top_k=config.rag_top_k,
+                max_distance=config.max_retrieval_distance,
+            )
             logger.info("retrieval_done row_id=%s examples=%s", row_id, len(examples))
             return {**state, "retrieved_examples": examples}
 
@@ -98,7 +93,7 @@ def build_graph(config: AppConfig):
                 normalized_text=state.get("normalized_text", ""),
                 syntax_report=state.get("syntax_report", {}),
                 retrieved_examples=state.get("retrieved_examples", []),
-            lessons_block=state.get("lessons_block", ""),
+                lessons_block=state.get("lessons_block", ""),
             )
             logger.info(
                 "llm_invoke_start row_id=%s prompt_chars=%s provider=%s model=%s timeout_s=%s",
@@ -128,7 +123,10 @@ def build_graph(config: AppConfig):
                     "explanation": f"LLM returned invalid JSON: {type(exc).__name__}",
                     "signals": ["invalid_llm_json"],
                     "parse_error": str(exc),
+                    "reflection_count": state.get("reflection_count", 0),
+                    "reflection_used": False,
                 }
+
             label = _coerce_label(parsed.get("label", 0))
             confidence = _coerce_confidence(parsed.get("confidence", 0.0))
             logger.info("reasoning_done row_id=%s label=%s confidence=%s topic=%s", row_id, label, confidence, parsed.get("primary_topic", ""))
@@ -143,68 +141,85 @@ def build_graph(config: AppConfig):
                 "topic_tags": _clean_topic_tags(parsed.get("topic_tags", [])),
                 "explanation": parsed.get("rationale", ""),
                 "signals": parsed.get("signals", []),
-            "reflection_count": state.get("reflection_count", 0),
-            "reflection_used": False,
-        }
+                "parse_error": "",
+                "reflection_count": state.get("reflection_count", 0),
+                "reflection_used": False,
+            }
 
     def should_reflect(state: ClassificationState) -> str:
-        """Conditional edge: decide whether to reflect or proceed to HITL routing."""
         if not config.reflection_enabled:
             return "hitl_routing"
-        reflection_count = state.get("reflection_count", 0)
-        if reflection_count >= config.max_reflection_retries:
+        if state.get("reflection_count", 0) >= config.max_reflection_retries:
             return "hitl_routing"
         if state.get("confidence", 0.0) < config.confidence_threshold:
             return "reflection"
         return "hitl_routing"
 
     def reflection_node(state: ClassificationState) -> ClassificationState:
-        """Re-retrieve with diversity and ask the LLM to reconsider its initial answer."""
+        row_id = state.get("row_id", "")
         query = state.get("normalized_text") or state["text"]
-        new_examples = retrieve_diverse_examples(
-            vector_store,
-            query=query,
-            total=config.rag_top_k,
-            fetch_k=config.rag_top_k * 2,
-            max_distance=config.max_retrieval_distance,
-        )
-
         first_label = state.get("label", 0)
         first_confidence = state.get("confidence", 0.0)
         first_explanation = state.get("explanation", "")
 
-        prompt = build_reflection_prompt(
-            original_text=state["text"],
-            normalized_text=state.get("normalized_text", ""),
-            first_label=first_label,
-            first_label_name=state.get("label_name", ""),
-            first_confidence=first_confidence,
-            first_explanation=first_explanation,
-            new_examples=new_examples,
-            syntax_report=state.get("syntax_report", {}),
-        )
-        response = llm.invoke(prompt)
-        raw = str(response.content)
-        parsed = _parse_llm_json(raw)
-        new_label = int(parsed.get("label", 0))
-        new_confidence = float(parsed.get("confidence", 0.0))
+        with log_timing("node_reflection", row_id=row_id, chars=len(query), top_k=config.rag_top_k):
+            new_examples = retrieve_diverse_examples(
+                vector_store,
+                query=query,
+                total=config.rag_top_k,
+                fetch_k=max(config.rag_top_k * 2, config.rag_top_k),
+                max_distance=config.max_retrieval_distance,
+            )
 
-        return {
-            **state,
-            "raw_response": raw,
-            "label": 1 if new_label == 1 else 0,
-            "label_name": parsed.get("label_name") or ("Offensive" if new_label == 1 else "Non-Offensive"),
-            "confidence": max(0.0, min(1.0, new_confidence)),
-            "languages": parsed.get("languages", []),
-            "explanation": parsed.get("rationale", ""),
-            "signals": parsed.get("signals", []),
-            "first_pass_label": first_label,
-            "first_pass_confidence": first_confidence,
-            "first_pass_explanation": first_explanation,
-            "reflection_count": state.get("reflection_count", 0) + 1,
-            "reflection_used": True,
-            "reflection_note": parsed.get("reflection_note", ""),
-            "retrieved_examples": new_examples,
+            prompt = build_reflection_prompt(
+                original_text=state["text"],
+                normalized_text=state.get("normalized_text", ""),
+                first_label=first_label,
+                first_label_name=state.get("label_name", ""),
+                first_confidence=first_confidence,
+                first_explanation=first_explanation,
+                new_examples=new_examples,
+                syntax_report=state.get("syntax_report", {}),
+            )
+            with log_timing("llm_reflection_invoke", row_id=row_id, provider=config.llm_provider, model=config.active_model):
+                response = llm.invoke(prompt)
+            raw = str(response.content)
+            try:
+                parsed = _parse_llm_json(raw)
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
+                logger.warning("reflection_json_parse_failed row_id=%s error=%s raw_prefix=%s", row_id, exc, raw[:240].replace("\n", "\\n"))
+                return {
+                    **state,
+                    "raw_response": raw,
+                    "parse_error": f"reflection JSON parse failed: {exc}",
+                    "reflection_count": state.get("reflection_count", 0) + 1,
+                    "reflection_used": True,
+                    "reflection_note": "Reflection was attempted, but the LLM returned invalid JSON.",
+                    "retrieved_examples": new_examples,
+                }
+
+            new_label = _coerce_label(parsed.get("label", 0))
+            new_confidence = _coerce_confidence(parsed.get("confidence", 0.0))
+            logger.info("reflection_done row_id=%s label=%s confidence=%s", row_id, new_label, new_confidence)
+            return {
+                **state,
+                "raw_response": raw,
+                "label": new_label,
+                "label_name": parsed.get("label_name") or ("Offensive" if new_label == 1 else "Non-Offensive"),
+                "confidence": new_confidence,
+                "languages": parsed.get("languages", []),
+                "primary_topic": _clean_topic(parsed.get("primary_topic", state.get("primary_topic", "unclear"))),
+                "topic_tags": _clean_topic_tags(parsed.get("topic_tags", state.get("topic_tags", []))),
+                "explanation": parsed.get("rationale", ""),
+                "signals": parsed.get("signals", []),
+                "first_pass_label": first_label,
+                "first_pass_confidence": first_confidence,
+                "first_pass_explanation": first_explanation,
+                "reflection_count": state.get("reflection_count", 0) + 1,
+                "reflection_used": True,
+                "reflection_note": parsed.get("reflection_note", ""),
+                "retrieved_examples": new_examples,
+                "parse_error": "",
             }
 
     def route_node(state: ClassificationState) -> ClassificationState:
@@ -257,9 +272,7 @@ def build_graph(config: AppConfig):
     workflow.add_edge("normalization", "syntax")
     workflow.add_edge("syntax", "retrieval")
     workflow.add_edge("retrieval", "reasoning")
-    # Conditional edge: after reasoning, either reflect or go to HITL routing
     workflow.add_conditional_edges("reasoning", should_reflect, {"reflection": "reflection", "hitl_routing": "hitl_routing"})
-    # After reflection, go back to HITL routing (not another reasoning pass)
     workflow.add_edge("reflection", "hitl_routing")
     workflow.add_edge("hitl_routing", END)
     return workflow.compile()

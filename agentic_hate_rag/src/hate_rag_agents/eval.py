@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from numbers import Integral
 from pathlib import Path
 from typing import Any
-
-import pandas as pd
 
 
 @dataclass
@@ -35,6 +34,7 @@ class EvalTracker:
         if gold_label != predicted_label:
             self.misclassified.append(
                 {
+                    "tracker_index": len(self.y_true) - 1,
                     "row_index": row_index,
                     "text": text,
                     "normalized_text": normalized_text,
@@ -51,14 +51,14 @@ class EvalTracker:
 
     def pop_recent_misclassified(self, since: int) -> list[dict[str, Any]]:
         """Return misclassified items added since the tracker had *since* total items."""
-        return [item for item in self.misclassified if True]
+        return [item for item in self.misclassified if isinstance(item.get("tracker_index"), int) and item["tracker_index"] >= since]
 
     def get_batch_misclassified(self, batch_start: int, batch_end: int) -> list[dict[str, Any]]:
         """Return misclassified items whose indices fall within the batch range."""
         return [
             item
             for item in self.misclassified
-            if isinstance(item.get("row_index"), int) and batch_start <= item["row_index"] < batch_end
+            if isinstance(item.get("row_index"), Integral) and batch_start <= item["row_index"] < batch_end
         ]
 
     def metrics(self) -> dict[str, Any]:

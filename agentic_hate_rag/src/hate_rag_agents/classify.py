@@ -3,11 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import os
-from pathlib import Path
+from numbers import Integral
 
-import requests
 import pandas as pd
+import requests
 from dotenv import load_dotenv
 from httpx import ConnectError as HttpxConnectError, RequestError as HttpxRequestError
 
@@ -16,12 +15,11 @@ from .eval import EvalTracker, generate_eval_summary, print_eval_summary
 from .graph import build_graph
 from .io_utils import DEFAULT_LABEL_COLUMNS, DEFAULT_TEXT_COLUMNS, detect_column, read_table, write_table
 from .labels import normalize_label
+from .llm_clients import build_llm
 from .logging_utils import get_app_logger, log_timing, setup_app_logging
 from .ollama_health import check_ollama, format_ollama_error
 from .rag_store import auto_ingest_row, make_vector_store
 from .reflection import LessonStore, analyze_errors
-
-from langchain_ollama import ChatOllama
 from .vllm_health import check_vllm, format_vllm_error
 
 
@@ -45,12 +43,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--collection", help="Override Chroma collection name.")
     parser.add_argument("--confidence-threshold", type=float, help="Override HITL threshold.")
     parser.add_argument("--save-every", type=int, default=1, help="Write output progress after this many classified rows.")
-    # New flags for the auto-eval reflection loop
     parser.add_argument("--no-reflection", action="store_true", help="Disable the reflection loop for low-confidence rows.")
     parser.add_argument("--no-auto-ingest", action="store_true", help="Disable auto-ingestion of high-confidence verified rows.")
     parser.add_argument("--clear-lessons", action="store_true", help="Clear learned lessons from previous runs before starting.")
-    parser.add_argument("--eval-batch-size", type=int, help="Override batch size for error analysis (default: 50).")
-    parser.add_argument("--save-every", type=int, default=1, help="Write output progress after this many classified rows.")
+    parser.add_argument("--eval-batch-size", type=int, help="Override batch size for error analysis.")
     parser.add_argument("--log-file", help="Path to app log file. Defaults to APP_LOG or ./outputs/app.log.")
     return parser.parse_args()
 
@@ -63,7 +59,6 @@ def main() -> None:
         load_dotenv(args.env_file, override=True)
 
     config = make_config(args)
-    print_classification_config(config, args)
     logger = setup_app_logging(config.app_log)
     logger.info("classify_start input=%s output=%s", args.input or "", args.output or "")
     print_classification_config(config, args)
@@ -93,55 +88,54 @@ def main() -> None:
         output_df = initialize_output_df(df, label_col)
         total_rows = len(output_df)
         save_every = max(1, args.save_every)
+        logger.info("classify_file_ready rows=%s text_column=%s label_column=%s save_every=%s", total_rows, text_col, label_col or "", save_every)
 
-        # --- Auto-eval setup ---
         has_ground_truth = label_col is not None
         tracker = EvalTracker() if has_ground_truth else None
         eval_batch_size = args.eval_batch_size or config.eval_batch_size
 
-        # --- Lesson store setup ---
         lessons_path = resolve_path(config.lessons_path)
         lesson_store = LessonStore.load(lessons_path)
         if args.clear_lessons:
             lesson_store.lessons.clear()
             lesson_store.save()
             print("Cleared all previously learned lessons.", flush=True)
+            logger.info("lessons_cleared path=%s", lessons_path)
         if lesson_store.lessons:
             print(f"Loaded {len(lesson_store.lessons)} lessons from previous runs.", flush=True)
+            logger.info("lessons_loaded count=%s path=%s", len(lesson_store.lessons), lessons_path)
 
-        # --- Auto-ingest setup ---
         auto_ingest_enabled = has_ground_truth and not args.no_auto_ingest
         vector_store = None
         if auto_ingest_enabled:
-            vector_store = make_vector_store(
-                persist_directory=config.chroma_dir,
-                collection_name=config.chroma_collection,
-                embedding_model=config.muril_model,
-            )
+            with log_timing("auto_ingest_make_vector_store", chroma_dir=config.chroma_dir, collection=config.chroma_collection):
+                vector_store = make_vector_store(
+                    persist_directory=config.chroma_dir,
+                    collection_name=config.chroma_collection,
+                    embedding_model=config.muril_model,
+                )
         auto_ingested_count = 0
-
-        # --- LLM for error analysis ---
-        analysis_llm = None
-        if has_ground_truth:
-            analysis_llm = ChatOllama(
-                model=config.ollama_model,
-                base_url=config.ollama_base_url,
-                temperature=0,
-                format="json",
-            )
-
+        analysis_llm = build_llm(config) if has_ground_truth else None
         batch_start_idx = 0
 
         for completed, (idx, row) in enumerate(df.iterrows(), start=1):
             text = "" if pd.isna(row.get(text_col)) else str(row.get(text_col))
+            logger.info("row_start completed=%s total=%s row_index=%s chars=%s", completed, total_rows, idx, len(text))
+            try:
+                invoke_state = {
+                    "text": text,
+                    "row_id": str(idx),
+                    "lessons_block": lesson_store.as_prompt_block(),
+                }
+                with log_timing("row_graph_invoke", completed=completed, total=total_rows, row_index=idx, chars=len(text)):
+                    result = graph.invoke(invoke_state)
+                item = public_result(result)
+            except Exception as exc:
+                logger.exception("row_failed completed=%s row_index=%s", completed, idx)
+                item = error_result(text, exc)
 
-            # Inject current lessons into the graph invocation
-            invoke_state = {"text": text, "lessons_block": lesson_store.as_prompt_block()}
-            result = graph.invoke(invoke_state)
-            item = public_result(result)
             write_result_to_row(output_df, idx, item)
 
-            # --- Auto-eval: compare with ground truth ---
             if has_ground_truth and label_col and tracker is not None:
                 gold_label = output_df.at[idx, "gold_hate_label"]
                 if gold_label != "" and not pd.isna(gold_label):
@@ -158,8 +152,7 @@ def main() -> None:
                         row_index=idx,
                     )
 
-                    # --- Auto-ingest: high confidence + correct ---
-                    if auto_ingest_enabled and vector_store is not None and match:
+                    if auto_ingest_enabled and vector_store is not None and match and not item.get("error"):
                         if item["confidence"] >= config.auto_ingest_threshold:
                             auto_ingest_row(
                                 vector_store,
@@ -170,21 +163,34 @@ def main() -> None:
                                 row_index=str(idx),
                             )
                             auto_ingested_count += 1
+                            logger.info("auto_ingested row_index=%s count=%s", idx, auto_ingested_count)
 
             print(
                 f"Classified {completed}/{total_rows} row {idx}: "
                 f"label={item['label']} confidence={item['confidence']:.2f} "
                 f"topic={item['primary_topic']}"
-                f"{' [reflected]' if item.get('reflection_used') else ''}",
+                f"{' [reflected]' if item.get('reflection_used') else ''}"
+                f"{' [error]' if item.get('error') else ''}",
                 flush=True,
             )
+            logger.info(
+                "row_done completed=%s total=%s row_index=%s label=%s confidence=%s topic=%s review=%s reflected=%s error=%s",
+                completed,
+                total_rows,
+                idx,
+                item["label"],
+                item["confidence"],
+                item["primary_topic"],
+                item["needs_review"],
+                item.get("reflection_used", False),
+                bool(item.get("error")),
+            )
 
-            # --- Periodic save ---
             if completed % save_every == 0 or completed == total_rows:
-                write_table(output_df, output_path)
+                with log_timing("save_progress", completed=completed, total=total_rows, path=output_path):
+                    write_table(output_df, output_path)
                 print(f"Saved progress: {completed}/{total_rows} rows to {output_path}", flush=True)
 
-            # --- Batch error analysis: learn from mistakes ---
             if (
                 has_ground_truth
                 and tracker is not None
@@ -193,8 +199,9 @@ def main() -> None:
                 and completed > 0
             ):
                 batch_misclassified = [
-                    m for m in tracker.misclassified
-                    if isinstance(m.get("row_index"), int) and m["row_index"] >= batch_start_idx
+                    item
+                    for item in tracker.misclassified
+                    if isinstance(item.get("row_index"), Integral) and item["row_index"] >= batch_start_idx
                 ]
                 if batch_misclassified:
                     print(
@@ -202,16 +209,17 @@ def main() -> None:
                         f"{len(batch_misclassified)} errors) ---",
                         flush=True,
                     )
-                    new_lessons = analyze_errors(analysis_llm, batch_misclassified)
+                    with log_timing("batch_error_analysis", rows=len(batch_misclassified), batch_start=batch_start_idx, batch_end=idx):
+                        new_lessons = analyze_errors(analysis_llm, batch_misclassified)
                     if new_lessons:
                         lesson_store.add_lessons(new_lessons)
                         print(f"Learned {len(new_lessons)} new lessons:", flush=True)
                         for lesson in new_lessons:
-                            print(f"  • {lesson}", flush=True)
+                            print(f"  - {lesson}", flush=True)
+                        logger.info("lessons_added count=%s total=%s", len(new_lessons), len(lesson_store.lessons))
                     else:
                         print("No new lessons extracted from this batch.", flush=True)
 
-                    # Print running metrics
                     running = tracker.metrics()
                     print(
                         f"Running metrics: accuracy={running['accuracy']:.2%} "
@@ -221,18 +229,18 @@ def main() -> None:
                         flush=True,
                     )
                     print("---\n", flush=True)
-                batch_start_idx = idx + 1 if isinstance(idx, int) else batch_start_idx + eval_batch_size
+                batch_start_idx = int(idx) + 1 if isinstance(idx, Integral) else batch_start_idx + eval_batch_size
 
-        # --- Final save ---
-        write_table(output_df, output_path)
+        with log_timing("write_final_output", rows=len(output_df), path=output_path):
+            write_table(output_df, output_path)
         print(f"\nWrote {len(output_df)} rows to {output_path}")
 
-        # --- Final eval summary ---
         if tracker is not None and tracker.total > 0:
             eval_summary_path = output_path.with_name(f"{output_path.stem}_eval_summary.json")
             summary = generate_eval_summary(tracker, eval_summary_path)
             print_eval_summary(summary)
             print(f"Eval summary written to {eval_summary_path}")
+            logger.info("eval_summary_written path=%s total=%s accuracy=%s f1=%s", eval_summary_path, summary.get("total"), summary.get("accuracy"), summary.get("f1"))
 
         if auto_ingested_count > 0:
             print(f"Auto-ingested {auto_ingested_count} high-confidence verified rows into ChromaDB.")
@@ -240,6 +248,7 @@ def main() -> None:
         if lesson_store.lessons:
             print(f"Total lessons learned: {len(lesson_store.lessons)} (saved to {lessons_path})")
 
+        logger.info("classify_done mode=file rows=%s output=%s auto_ingested=%s lessons=%s", len(output_df), output_path, auto_ingested_count, len(lesson_store.lessons))
     except (HttpxConnectError, HttpxRequestError, requests.RequestException) as exc:
         logger.exception("classify_http_error")
         error_message = (
@@ -292,8 +301,17 @@ def print_classification_config(config: AppConfig, args: argparse.Namespace) -> 
         print(f"  Input: {resolve_path(args.input)}", flush=True)
     if args.output:
         print(f"  Output: {resolve_path(args.output)}", flush=True)
-    print(f"  Ollama model: {config.ollama_model}", flush=True)
-    print(f"  Ollama base URL: {config.ollama_base_url}", flush=True)
+    print(f"  LLM provider: {config.llm_provider}", flush=True)
+    print(f"  LLM model: {config.active_model}", flush=True)
+    print(f"  LLM base URL: {config.active_base_url}", flush=True)
+    print(f"  LLM timeout: {config.active_timeout_seconds}s", flush=True)
+    if config.llm_provider == "ollama":
+        print(f"  Ollama model: {config.ollama_model}", flush=True)
+        print(f"  Ollama base URL: {config.ollama_base_url}", flush=True)
+    else:
+        print(f"  vLLM model: {config.vllm_model}", flush=True)
+        print(f"  vLLM base URL: {config.vllm_base_url}", flush=True)
+        print(f"  vLLM API key set: {'yes' if config.vllm_api_key else 'no'}", flush=True)
     print(f"  MuRIL model: {config.muril_model}", flush=True)
     print(f"  MuRIL device requested: {requested_device}", flush=True)
     print(f"  MuRIL device resolved: {resolved_device}", flush=True)
@@ -304,6 +322,7 @@ def print_classification_config(config: AppConfig, args: argparse.Namespace) -> 
     print(f"  RAG top-k: {config.rag_top_k}", flush=True)
     print(f"  Confidence threshold: {config.confidence_threshold}", flush=True)
     print(f"  HITL queue: {config.hitl_queue}", flush=True)
+    print(f"  App log: {config.app_log}", flush=True)
     print(f"  Save every: {max(1, args.save_every)} row(s)", flush=True)
     print(f"  Reflection enabled: {config.reflection_enabled}", flush=True)
     print(f"  Max reflection retries: {config.max_reflection_retries}", flush=True)
@@ -312,6 +331,47 @@ def print_classification_config(config: AppConfig, args: argparse.Namespace) -> 
     print(f"  Auto-ingest enabled: {not args.no_auto_ingest}", flush=True)
     print(f"  Eval batch size: {config.eval_batch_size}", flush=True)
     print(f"  Lessons path: {config.lessons_path}", flush=True)
+
+    logger = get_app_logger()
+    for line in [
+        f"config input_mode={input_mode}",
+        f"config llm_provider={config.llm_provider}",
+        f"config active_model={config.active_model}",
+        f"config active_base_url={config.active_base_url}",
+        f"config active_timeout_seconds={config.active_timeout_seconds}",
+        f"config muril_model={config.muril_model}",
+        f"config muril_device_requested={requested_device}",
+        f"config muril_device_resolved={resolved_device}",
+        f"config chroma_dir={config.chroma_dir}",
+        f"config chroma_collection={config.chroma_collection}",
+        f"config rag_top_k={config.rag_top_k}",
+        f"config confidence_threshold={config.confidence_threshold}",
+        f"config reflection_enabled={config.reflection_enabled}",
+        f"config max_reflection_retries={config.max_reflection_retries}",
+        f"config max_retrieval_distance={config.max_retrieval_distance}",
+        f"config auto_ingest_threshold={config.auto_ingest_threshold}",
+        f"config eval_batch_size={config.eval_batch_size}",
+        f"config lessons_path={config.lessons_path}",
+        f"config app_log={config.app_log}",
+        f"config save_every={max(1, args.save_every)}",
+    ]:
+        logger.info(line)
+
+
+def ensure_llm_health(config: AppConfig, logger) -> None:
+    if config.llm_provider == "vllm":
+        with log_timing("vllm_health_check", model=config.vllm_model, base_url=config.vllm_base_url):
+            health = check_vllm(config.vllm_base_url, config.vllm_model, api_key=config.vllm_api_key)
+        if not health.reachable or not health.model_available:
+            logger.error("vllm_health_failed reachable=%s model_available=%s", health.reachable, health.model_available)
+            raise SystemExit(format_vllm_error(config.vllm_base_url, config.vllm_model, health))
+        return
+
+    with log_timing("ollama_health_check", model=config.ollama_model, base_url=config.ollama_base_url):
+        health = check_ollama(config.ollama_base_url, config.ollama_model)
+    if not health.reachable or not health.model_available:
+        logger.error("ollama_health_failed reachable=%s model_available=%s", health.reachable, health.model_available)
+        raise SystemExit(format_ollama_error(config.ollama_base_url, config.ollama_model, health))
 
 
 def resolve_muril_device_for_display(requested_device: str) -> tuple[str, str]:
@@ -349,12 +409,20 @@ def initialize_output_df(df: pd.DataFrame, label_col: str | None) -> pd.DataFram
         "agent_raw_response",
         "agent_reflection_used",
         "agent_reflection_note",
+        "agent_error",
     ]
+    object_columns = {column: "object" for column in output_columns}
     for column in output_columns:
-        output_df[column] = ""
+        output_df[column] = pd.Series([None] * len(output_df), index=output_df.index)
     if label_col:
-        output_df["gold_hate_label"] = [normalize_label(value) for value in df[label_col]]
-        output_df["agent_label_matches_gold"] = ""
+        output_df["gold_hate_label"] = pd.Series(
+            [normalize_label(value) for value in df[label_col]],
+            index=output_df.index,
+        )
+        output_df["agent_label_matches_gold"] = pd.Series([None] * len(output_df), index=output_df.index)
+        object_columns["gold_hate_label"] = "object"
+        object_columns["agent_label_matches_gold"] = "object"
+    output_df = output_df.astype(object_columns, copy=False)
     return output_df
 
 
@@ -372,6 +440,7 @@ def write_result_to_row(output_df: pd.DataFrame, idx, item: dict) -> None:
     output_df.at[idx, "agent_raw_response"] = item["raw_response"]
     output_df.at[idx, "agent_reflection_used"] = item.get("reflection_used", False)
     output_df.at[idx, "agent_reflection_note"] = item.get("reflection_note", "")
+    output_df.at[idx, "agent_error"] = item.get("error", "")
 
 
 def public_result(result: dict) -> dict:
@@ -393,6 +462,30 @@ def public_result(result: dict) -> dict:
         "raw_response": result.get("raw_response", ""),
         "reflection_used": result.get("reflection_used", False),
         "reflection_note": result.get("reflection_note", ""),
+        "error": result.get("parse_error", ""),
+    }
+
+
+def error_result(text: str, exc: Exception) -> dict:
+    return {
+        "text": text,
+        "normalized_text": text,
+        "label": 0,
+        "label_name": "Unclear",
+        "confidence": 0.0,
+        "languages": [],
+        "primary_topic": "unclear",
+        "topic_tags": ["unclear"],
+        "needs_review": True,
+        "review_reason": "classification runtime error",
+        "explanation": f"Classification failed for this row: {type(exc).__name__}",
+        "signals": ["classification_error"],
+        "syntax_report": {},
+        "retrieved_examples": [],
+        "raw_response": "",
+        "reflection_used": False,
+        "reflection_note": "",
+        "error": f"{type(exc).__name__}: {exc}",
     }
 
 

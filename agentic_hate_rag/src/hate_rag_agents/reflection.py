@@ -55,7 +55,7 @@ class LessonStore:
             return ""
         numbered = "\n".join(f"{i + 1}. {lesson}" for i, lesson in enumerate(self.lessons))
         return (
-            "IMPORTANT — Lessons learned from previous classification errors on this dataset. "
+            "IMPORTANT - Lessons learned from previous classification errors on this dataset. "
             "Apply these when classifying the current comment:\n"
             f"{numbered}\n"
         )

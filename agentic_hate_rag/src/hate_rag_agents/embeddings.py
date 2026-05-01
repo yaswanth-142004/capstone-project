@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import math
+import os
 from typing import Iterable
 
 import numpy as np
@@ -14,15 +14,9 @@ class MuRILEmbeddings(Embeddings):
     """LangChain embeddings adapter for MuRIL-style Hugging Face encoders."""
 
     def __init__(
-        
         self,
-       
         model_name: str = "google/muril-base-cased",
-       
         batch_size: int = 16,
-        device: str | None = None,
-        show_progress: bool | None = None,
-    ,
         device: str | None = None,
         show_progress: bool | None = None,
     ):
@@ -48,17 +42,13 @@ class MuRILEmbeddings(Embeddings):
             print(f"Loading MuRIL embedding model on {self._device}: {self.model_name}", flush=True)
             if self.device.strip().lower() == "auto" and self._device == "cpu" and not torch.cuda.is_available():
                 print("MuRIL device note: CUDA is not available in this Python environment; using CPU.", flush=True)
-        self._device = self._resolve_device(torch)
-        if self.show_progress:
-            print(f"Loading MuRIL embedding model on {self._device}: {self.model_name}", flush=True)
-            if self.device.strip().lower() == "auto" and self._device == "cpu" and not torch.cuda.is_available():
-                print("MuRIL device note: CUDA is not available in this Python environment; using CPU.", flush=True)
         logger.info("muril_load_start model=%s device=%s", self.model_name, self._device)
         with log_timing("muril_tokenizer_load", model=self.model_name):
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         with log_timing("muril_model_load", model=self.model_name, device=self._device):
-            self._model = AutoModel.from_pretrained(self.model_name).to(self._device).to(self._device)
+            self._model = AutoModel.from_pretrained(self.model_name).to(self._device)
         self._model.eval()
+        logger.info("muril_load_done model=%s device=%s", self.model_name, self._device)
 
     def _resolve_device(self, torch) -> str:
         requested = self.device.strip().lower()
@@ -76,11 +66,17 @@ class MuRILEmbeddings(Embeddings):
         progress_enabled = self.show_progress and total > self.batch_size
         if progress_enabled:
             print(f"Embedding {total} texts in {total_batches} batches...", flush=True)
+        logger = get_app_logger()
+        logger.info("muril_embed_documents_start total=%s batch_size=%s batches=%s device=%s", total, self.batch_size, total_batches, self._device)
         for batch_number, batch in enumerate(_batches(texts, self.batch_size), start=1):
-            vectors.extend(self._embed_batch(batch))
+            with log_timing("muril_embed_batch", batch=batch_number, total_batches=total_batches, batch_size=len(batch), device=self._device):
+                vectors.extend(self._embed_batch(batch))
             processed = min(batch_number * self.batch_size, total)
             if progress_enabled and (batch_number == 1 or batch_number == total_batches or batch_number % 10 == 0):
                 print(f"Embedding progress: {processed}/{total} texts ({batch_number}/{total_batches} batches)", flush=True)
+            if batch_number == 1 or batch_number == total_batches or batch_number % 10 == 0:
+                logger.info("muril_embedding_progress processed=%s total=%s batch=%s batches=%s", processed, total, batch_number, total_batches)
+        logger.info("muril_embed_documents_done total=%s batches=%s", total, total_batches)
         return vectors
 
     def embed_query(self, text: str) -> list[float]:

@@ -24,10 +24,16 @@ class AppConfig:
     chroma_dir: Path = field(default_factory=lambda: Path(os.getenv("CHROMA_DIR", "./storage/chroma")))
     chroma_collection: str = field(default_factory=lambda: os.getenv("CHROMA_COLLECTION", "code_mixed_hate_memory"))
     rag_top_k: int = field(default_factory=lambda: int(os.getenv("RAG_TOP_K", "5")))
-    confidence_threshold: float = field(default_factory=lambda: float(os.getenv("CONFIDENCE_THRESHOLD", "0.50")))
+    confidence_threshold: float = field(default_factory=lambda: float(os.getenv("CONFIDENCE_THRESHOLD", "0.68")))
     hitl_queue: Path = field(default_factory=lambda: Path(os.getenv("HITL_QUEUE", "./outputs/hitl_review_queue.csv")))
     app_log: Path = field(default_factory=lambda: Path(os.getenv("APP_LOG", "./outputs/app.log")))
     temperature: float = field(default_factory=lambda: float(os.getenv("OLLAMA_TEMPERATURE", "0")))
+    reflection_enabled: bool = field(default_factory=lambda: os.getenv("REFLECTION_ENABLED", "true").lower() in {"true", "1", "yes"})
+    max_reflection_retries: int = field(default_factory=lambda: int(os.getenv("MAX_REFLECTION_RETRIES", "1")))
+    max_retrieval_distance: float = field(default_factory=lambda: float(os.getenv("MAX_RETRIEVAL_DISTANCE", "1.2")))
+    auto_ingest_threshold: float = field(default_factory=lambda: float(os.getenv("AUTO_INGEST_THRESHOLD", "0.85")))
+    eval_batch_size: int = field(default_factory=lambda: int(os.getenv("EVAL_BATCH_SIZE", "50")))
+    lessons_path: Path = field(default_factory=lambda: Path(os.getenv("LESSONS_PATH", "./outputs/lessons.json")))
 
     @property
     def active_model(self) -> str:
@@ -40,15 +46,6 @@ class AppConfig:
     @property
     def active_timeout_seconds(self) -> float:
         return self.vllm_timeout_seconds if self.llm_provider == "vllm" else self.ollama_timeout_seconds
-    # Reflection loop settings
-    reflection_enabled: bool = os.getenv("REFLECTION_ENABLED", "true").lower() in {"true", "1", "yes"}
-    max_reflection_retries: int = int(os.getenv("MAX_REFLECTION_RETRIES", "1"))
-    # Smart retrieval settings
-    max_retrieval_distance: float = float(os.getenv("MAX_RETRIEVAL_DISTANCE", "1.2"))
-    # Auto-eval and auto-ingest settings
-    auto_ingest_threshold: float = float(os.getenv("AUTO_INGEST_THRESHOLD", "0.85"))
-    eval_batch_size: int = int(os.getenv("EVAL_BATCH_SIZE", "50"))
-    lessons_path: Path = Path(os.getenv("LESSONS_PATH", "./outputs/lessons.json"))
 
 
 def resolve_path(path: str | Path) -> Path:
